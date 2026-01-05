@@ -1,0 +1,268 @@
+{
+	"info": {
+		"_postman_id": "3c159018-3c64-4bc6-9b36-0a6828c66a9a",
+		"name": "Casa Empenos API",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "50923912",
+		"_collection_link": "https://sole-2m-sol-8638243.postman.co/workspace/CasaEmpe%C3%B1os---Backend~ceb6b621-2231-408e-ae73-f5dcd9755e1d/collection/50923912-3c159018-3c64-4bc6-9b36-0a6828c66a9a?action=share&source=collection_link&creator=50923912"
+	},
+	"item": [
+		{
+			"name": "00 Auth",
+			"item": [
+				{
+					"name": "01 - Token (login)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const data = pm.response.json();\r",
+									"pm.environment.set(\"access_token\", data.access);\r",
+									"pm.environment.set(\"refresh_token\", data.refresh);\r",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"username\": \"dueno\",\r\n  \"password\": \"Madarrsr8\"\r\n}\r\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/auth/token",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"auth",
+								"token"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "01 Cash",
+			"item": [
+				{
+					"name": "01 - Balances",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/cash-registers/balances",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"cash-registers",
+								"balances"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "02 - Abrir sesión",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"cash_register_id\": \"2a668474-98e6-4f7a-8ed6-afa2ced162a0\",\r\n  \"opening_amount\": \"500.00\"\r\n}\r\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/cash-sessions/open",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"cash-sessions",
+								"open"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "03 - Transferencia",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"from_cash_register_id\": \"c48f9487-633d-4e19-a3b6-d75c31159d96\",\r\n  \"to_cash_register_id\": \"2a668474-98e6-4f7a-8ed6-afa2ced162a0\",\r\n  \"amount\": \"100.00\",\r\n  \"note\": \"Reposición\"\r\n}\r\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/transfers",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"transfers"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "04 - Cerrar sesión",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"cash_session_id\": \"bb016718-123a-453d-872b-e17aa0701e7b\",\r\n  \"counted_amount\": \"500.00\",\r\n  \"note\": \"Cierre\"\r\n}\r\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/cash-sessions/close",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"cash-sessions",
+								"close"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "02 Pawn",
+			"item": []
+		},
+		{
+			"name": "03 Reports",
+			"item": [
+				{
+					"name": "01 - Daily Summary (JSON)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/reports/daily-summary?branch_code=PT1&date=2026-01-04",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"reports",
+								"daily-summary"
+							],
+							"query": [
+								{
+									"key": "branch_code",
+									"value": "PT1"
+								},
+								{
+									"key": "date",
+									"value": "2026-01-04"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "02 - Daily Summary (PDF)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/reports/daily-summary.pdf?branch_code=PT1&date=2026-01-04",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"reports",
+								"daily-summary.pdf"
+							],
+							"query": [
+								{
+									"key": "branch_code",
+									"value": "PT1"
+								},
+								{
+									"key": "date",
+									"value": "2026-01-04"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{access_token}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	]
+}
