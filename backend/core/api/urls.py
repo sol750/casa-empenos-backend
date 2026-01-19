@@ -3,6 +3,8 @@ from core.api.views.cash_register_alerts import CashRegisterAlertsView
 from core.api.views.transfer import TransferCreateView
 from core.api.views.cash_register_balance import CashRegisterBalancesView
 from core.api.views.cash_session_current import CurrentCashSessionView
+from core.api.views.me import MeView
+
 
 from core.api.views.cash_session import OpenCashSessionView
 from core.api.views.cash_register import CashRegisterListView
@@ -23,6 +25,8 @@ urlpatterns = [
     path("cash-registers/balances", CashRegisterBalancesView.as_view()),
     path("cash-registers/alerts", CashRegisterAlertsView.as_view()),
     path("cash-sessions/current", CurrentCashSessionView.as_view()),
+    path("auth/me", MeView.as_view(), name="auth_me"),
+
    
     path("cash-registers", CashRegisterListView.as_view()),
     path("cash-sessions/open", OpenCashSessionView.as_view()), 
