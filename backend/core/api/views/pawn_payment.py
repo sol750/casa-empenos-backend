@@ -8,8 +8,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.models import PawnContract, PawnPayment, CashSession, CashMovement
-from core.models_security import UserRole
 from core.api.serializers.pawn_payment import PawnPaymentCreateSerializer
+from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
 from core.services.interest_calc import prorated_interest
 
 
@@ -20,51 +20,69 @@ class PawnPaymentCreateView(APIView):
         serializer = PawnPaymentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        roles = set(UserRole.objects.filter(user=request.user).values_list("role__code", flat=True))
-        allowed_roles = {"CAJERO", "SUPERVISOR", "OWNER_ADMIN"}
-        if not roles.intersection(allowed_roles):
-            return Response({"detail": "No tiene permisos para registrar pagos."}, status=status.HTTP_403_FORBIDDEN)
+        require_roles(request.user, {"CAJERO", "SUPERVISOR", "OWNER_ADMIN"})
 
-        contract = PawnContract.objects.get(public_id=serializer.validated_data["pawn_contract_id"])
-        cash_session = CashSession.objects.select_related("cash_register", "branch").get(
-            public_id=serializer.validated_data["cash_session_id"]
-        )
+        # 1) Cargar sesión
+        try:
+            cash_session = CashSession.objects.select_related("cash_register", "branch").get(
+                public_id=serializer.validated_data["cash_session_id"]
+            )
+        except CashSession.DoesNotExist:
+            return Response({"detail": "Sesión de caja no encontrada."}, status=status.HTTP_404_NOT_FOUND)
 
         if cash_session.status != CashSession.Status.OPEN:
             return Response({"detail": "La sesión de caja no está abierta."}, status=status.HTTP_409_CONFLICT)
 
-        # Pago debe realizarse en la misma sucursal del contrato (MVP)
-        if cash_session.branch_id != contract.branch_id and "OWNER_ADMIN" not in roles:
+        # 2) Cargar contrato
+        try:
+            contract = PawnContract.objects.select_related("branch").get(
+                public_id=serializer.validated_data["pawn_contract_id"]
+            )
+        except PawnContract.DoesNotExist:
+            return Response({"detail": "Contrato no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        if contract.status != PawnContract.Status.ACTIVE:
+            return Response({"detail": "El contrato no está activo."}, status=status.HTTP_409_CONFLICT)
+
+        # 3) Control de acceso por sucursal (contrato)
+        if not is_owner_admin(request.user):
+            allowed_codes = get_user_branch_codes(request.user)
+            if contract.branch.code not in allowed_codes:
+                return Response({"detail": "No tiene acceso a esta sucursal."}, status=status.HTTP_403_FORBIDDEN)
+
+        # 4) Pago debe registrarse en la misma sucursal del contrato (MVP)
+        if (cash_session.branch_id != contract.branch_id) and (not is_owner_admin(request.user)):
             return Response({"detail": "El pago debe registrarse en la sucursal del contrato."}, status=status.HTTP_403_FORBIDDEN)
 
         payment_amount = serializer.validated_data["amount"]
         payment_date = serializer.validated_data.get("payment_date", timezone.now().date())
         note = serializer.validated_data.get("note", "")
 
-        # 1) Capital pendiente = principal - sum(principal_paid)
-        totals = contract.payments.aggregate(
-            principal_paid=Sum("principal_paid"),
-        )
-        principal_paid_total = totals["principal_paid"] or Decimal("0.00")
-        outstanding_principal = contract.principal_amount - principal_paid_total
-        if outstanding_principal <= 0:
-            return Response({"detail": "El contrato ya no tiene capital pendiente."}, status=status.HTTP_409_CONFLICT)
-
-        # 2) Interés devengado desde start_date (MVP simple)
-        # Para que sea correcto a futuro, luego guardaremos last_interest_calc_date en contrato.
-        interest_due = prorated_interest(
-            principal=outstanding_principal,
-            monthly_rate_percent=contract.interest_rate_monthly,
-            from_date=contract.interest_accrued_until or contract.start_date,to_date=payment_date,
-        )
-
-        # 3) Aplicación del pago: primero interés, luego capital
-        interest_paid = min(payment_amount, interest_due)
-        remaining = payment_amount - interest_paid
-        principal_paid = min(remaining, outstanding_principal)
-        out_after = outstanding_principal - principal_paid
-
         with transaction.atomic():
+            # Bloquear contrato para cálculo concurrente correcto
+            contract = PawnContract.objects.select_for_update().get(pk=contract.pk)
+
+            totals = contract.payments.aggregate(principal_paid=Sum("principal_paid"))
+            principal_paid_total = totals["principal_paid"] or Decimal("0.00")
+            outstanding_principal = contract.principal_amount - principal_paid_total
+
+            if outstanding_principal <= 0:
+                return Response({"detail": "El contrato ya no tiene capital pendiente."}, status=status.HTTP_409_CONFLICT)
+
+            from_date = contract.interest_accrued_until or contract.start_date
+
+            interest_due = prorated_interest(
+                principal=outstanding_principal,
+                monthly_rate_percent=contract.interest_rate_monthly,
+                from_date=from_date,
+                to_date=payment_date,
+            )
+
+            interest_paid = min(payment_amount, interest_due)
+            remaining = payment_amount - interest_paid
+            principal_paid = min(remaining, outstanding_principal)
+            out_after = outstanding_principal - principal_paid
+
             payment = PawnPayment.objects.create(
                 contract=contract,
                 cash_session=cash_session,
@@ -75,7 +93,7 @@ class PawnPaymentCreateView(APIView):
                 note=note,
             )
 
-            # Movimiento de caja: entra dinero
+            # Movimiento de caja (entra dinero)
             CashMovement.objects.create(
                 cash_session=cash_session,
                 cash_register=cash_session.cash_register,
@@ -85,14 +103,15 @@ class PawnPaymentCreateView(APIView):
                 performed_by=request.user,
                 note=f"Pago contrato {contract.contract_number}",
             )
-            # Si el capital pendiente queda en 0, cerramos el contrato
-            if out_after <= 0:contract.status = PawnContract.Status.CLOSED
-            contract.save(update_fields=["status"])
 
-            # Marcamos hasta qué fecha ya quedó “accrued/cobrado” el interés
-            if payment_date > (contract.interest_accrued_until or contract.start_date):contract.interest_accrued_until = payment_date
-            contract.save(update_fields=["interest_accrued_until"])
+            # actualizar contrato
+            if out_after <= 0:
+                contract.status = PawnContract.Status.CLOSED
 
+            if payment_date > from_date:
+                contract.interest_accrued_until = payment_date
+
+            contract.save(update_fields=["status", "interest_accrued_until"])
 
         return Response(
             {

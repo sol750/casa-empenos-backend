@@ -1,35 +1,38 @@
-from django.db.models import Sum
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.models import CashRegister, CashSession
+from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
 
 
 class CashRegisterBalancesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user_roles = set(request.user.user_roles.values_list("role__code", flat=True))
+        # Roles permitidos para ver balances
+        require_roles(request.user, {"CAJERO", "SUPERVISOR", "OWNER_ADMIN"})
 
         qs = CashRegister.objects.select_related("branch").filter(is_active=True)
 
         # Si no es OWNER_ADMIN: solo sus sucursales y sin global
-        if "OWNER_ADMIN" not in user_roles:
-            branch_ids = request.user.branch_access.values_list("branch_id", flat=True)
-            qs = qs.filter(register_type=CashRegister.RegisterType.BRANCH, branch_id__in=branch_ids)
+        if not is_owner_admin(request.user):
+            branch_codes = get_user_branch_codes(request.user)
+            qs = qs.filter(
+                register_type=CashRegister.RegisterType.BRANCH,
+                branch__code__in=branch_codes,
+            )
 
         data = []
         for cr in qs.order_by("register_type", "branch__code", "name"):
             session = (
-                CashSession.objects.filter(cash_register=cr, status=CashSession.Status.OPEN)
-                .prefetch_related("movements")
+                CashSession.objects.select_related("cash_register", "branch")
+                .filter(cash_register=cr, status=CashSession.Status.OPEN)
                 .first()
             )
 
             if session:
-                mov_total = session.movements.aggregate(total=Sum("amount"))["total"] or 0
-                expected = session.opening_amount + mov_total
+                expected = session.expected_balance
                 data.append(
                     {
                         "cash_register_id": str(cr.public_id),
