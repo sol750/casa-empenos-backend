@@ -124,3 +124,5 @@ class CashMovementAdmin(admin.ModelAdmin):
     list_filter = ("movement_type", "cash_register", "branch")
     search_fields = ("note", "cash_register__name", "performed_by__username")
     ordering = ("-performed_at",)
+
+

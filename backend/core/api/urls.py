@@ -18,6 +18,9 @@ from core.api.views.cash_session_reopen import CashSessionReopenView
 from core.api.views.cash_session_report import CashSessionClosingReportPDFView
 from core.api.views.reports_daily_summary import DailySummaryReportView
 from core.api.views.reports_daily_summary_pdf import DailySummaryReportPDFView
+from core.api.views.cash_session_movements import CashSessionMovementsView
+from core.api.views.users_admin import UserListCreateView, UserDetailUpdateView
+from core.api.views.meta import RolesMetaView, BranchesMetaView
 
 
 
@@ -41,5 +44,10 @@ urlpatterns = [
     path("cash-sessions/<uuid:cash_session_id>/closing-report.pdf", CashSessionClosingReportPDFView.as_view()),
     path("reports/daily-summary", DailySummaryReportView.as_view()),
     path("reports/daily-summary.pdf", DailySummaryReportPDFView.as_view()),
+    path("cash-sessions/<uuid:cash_session_id>/movements", CashSessionMovementsView.as_view()),
+    path("users", UserListCreateView.as_view()),
+    path("users/<int:user_id>", UserDetailUpdateView.as_view()),
+    path("meta/roles", RolesMetaView.as_view()),
+    path("meta/branches", BranchesMetaView.as_view()),
 
 ]
