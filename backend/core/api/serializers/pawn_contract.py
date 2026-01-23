@@ -10,10 +10,10 @@ class PawnContractCreateSerializer(serializers.Serializer):
     customer_ci = serializers.CharField(max_length=30, required=False, allow_blank=True, default="")
 
     principal_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
-    interest_rate_monthly = serializers.DecimalField(max_digits=6, decimal_places=2, required=False, default="8.00")
+    interest_rate_monthly = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
 
     start_date = serializers.DateField(required=False)
-    due_date = serializers.DateField()
+    due_date = serializers.DateField(required=False)
 
     interest_mode = serializers.ChoiceField(
         choices=["MONTHLY_PRORATED", "FIXED", "PROMO"],
