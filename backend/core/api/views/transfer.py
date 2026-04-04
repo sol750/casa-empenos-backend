@@ -75,7 +75,7 @@ class TransferCreateView(APIView):
                 cash_register=from_cr,
                 branch=from_cr.branch,
                 movement_type=CashMovement.MovementType.TRANSFER_OUT,
-                amount=-amount,
+                amount=amount,
                 performed_by=request.user,
                 note=note,
             )

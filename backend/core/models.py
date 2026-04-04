@@ -271,4 +271,41 @@ class PawnRenewal(models.Model):
 
     note = models.CharField(max_length=255, blank=True, default="")
 
-from .models_security import Role, UserRole, UserBranchAccess  # noqa: F401
+
+
+
+class PawnItem(models.Model):
+    class Category(models.TextChoices):
+        LAPTOP = "LAPTOP", "Laptop"
+        PHONE = "PHONE", "Celular"
+        JEWELRY = "JEWELRY", "Joya"
+        APPLIANCE = "APPLIANCE", "Electrodoméstico"
+        CONSOLE = "CONSOLE", "Consola"
+        INSTRUMENT = "INSTRUMENT", "Instrumento musical"
+        OTHER = "OTHER", "Otro"
+
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    contract = models.ForeignKey(
+        "PawnContract",
+        on_delete=models.CASCADE,
+        related_name="items"
+    )
+
+    category = models.CharField(max_length=20, choices=Category.choices)
+
+    # Descripción general
+    description = models.TextField(blank=True)
+
+    # ⚙️ Características técnicas (JSON flexible)
+    attributes = models.JSONField(default=dict, blank=True)
+
+    # 📦 Estado físico
+    has_box = models.BooleanField(default=False)
+    has_charger = models.BooleanField(default=False)
+    observations = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.category} - {self.contract.contract_number}"

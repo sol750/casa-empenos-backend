@@ -125,4 +125,11 @@ class CashMovementAdmin(admin.ModelAdmin):
     search_fields = ("note", "cash_register__name", "performed_by__username")
     ordering = ("-performed_at",)
 
+from .models import PawnItem
+
+@admin.register(PawnItem)
+class PawnItemAdmin(admin.ModelAdmin):
+    list_display = ("contract", "category", "description", "has_box", "has_charger", "created_at")
+    list_filter = ("category", "has_box", "has_charger")
+    search_fields = ("contract__contract_number", "description")
 
