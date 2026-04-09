@@ -11,6 +11,7 @@ from core.models import PawnContract, PawnPayment, CashSession, CashMovement
 from core.api.serializers.pawn_payment import PawnPaymentCreateSerializer
 from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
 from core.services.interest_calc import prorated_interest
+from core.services.scoring_engine import apply_contract_closure_score
 
 
 class PawnPaymentCreateView(APIView):
@@ -104,7 +105,8 @@ class PawnPaymentCreateView(APIView):
                 note=f"Pago contrato {contract.contract_number}",
             )
 
-            # actualizar contrato
+            # ── Actualizar contrato ───────────────────────────────────────────
+            contract_was_open = contract.status == PawnContract.Status.ACTIVE
             if out_after <= 0:
                 contract.status = PawnContract.Status.CLOSED
 
@@ -113,14 +115,32 @@ class PawnPaymentCreateView(APIView):
 
             contract.save(update_fields=["status", "interest_accrued_until"])
 
-        return Response(
-            {
-                "pawn_payment_id": str(payment.public_id),
-                "contract_number": contract.contract_number,
-                "amount": str(payment.amount),
-                "interest_paid": str(payment.interest_paid),
-                "principal_paid": str(payment.principal_paid),
-                "outstanding_principal_after": str(outstanding_principal - principal_paid),
-            },
-            status=status.HTTP_201_CREATED,
-        )
+            # ── Disparar motor de scoring al cerrar el contrato ──────────────
+            # Se ejecuta dentro del mismo atomic() para garantizar consistencia
+            scoring_result = None
+            if contract_was_open and contract.status == PawnContract.Status.CLOSED:
+                scoring_result = apply_contract_closure_score(contract)
+
+        response_data = {
+            "pawn_payment_id":            str(payment.public_id),
+            "contract_number":            contract.contract_number,
+            "contract_status":            contract.status,
+            "amount":                     str(payment.amount),
+            "interest_paid":              str(payment.interest_paid),
+            "principal_paid":             str(payment.principal_paid),
+            "outstanding_principal_after": str(outstanding_principal - principal_paid),
+        }
+
+        # Adjuntar resultado del scoring si el contrato fue cerrado
+        if scoring_result and scoring_result.get("applied"):
+            response_data["scoring_update"] = {
+                "customer_score_before": scoring_result["old_score"],
+                "customer_score_after":  scoring_result["new_score"],
+                "category_before":       scoring_result["old_category"],
+                "category_after":        scoring_result["new_category"],
+                "risk_color":            scoring_result["risk_color"],
+                "days_late":             scoring_result["days_late"],
+                "points_delta":          scoring_result["delta"],
+            }
+
+        return Response(response_data, status=status.HTTP_201_CREATED)

@@ -1,8 +1,9 @@
 import uuid
 from decimal import Decimal
 from django.conf import settings
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 
@@ -130,19 +131,33 @@ class CashSession(models.Model):
         return f"{self.cash_register} - {self.status} - {self.opened_at:%Y-%m-%d %H:%M}"
     @property
     def expected_balance(self):
+        # Si la sesión ya fue cerrada, usamos el valor guardado (inmutable)
         if self.closing_expected_amount is not None:
             return self.closing_expected_amount
 
-        total = self.opening_amount
+        # Movimientos _IN suman, movimientos _OUT restan
+        # Usamos agregación en DB para eficiencia (evita iterar en Python)
+        from django.db.models import Case, When, F, DecimalField
 
-        for m in self.movements.all():
-            mt = (m.movement_type or "").upper().strip()
-            if mt.endswith("_IN"):
-                total += m.amount
-            elif mt.endswith("_OUT"):
-                total -= m.amount
-
-        return total
+        agg = self.movements.aggregate(
+            total_in=Sum(
+                Case(
+                    When(movement_type__endswith="_IN", then=F("amount")),
+                    default=Decimal("0.00"),
+                    output_field=DecimalField(),
+                )
+            ),
+            total_out=Sum(
+                Case(
+                    When(movement_type__endswith="_OUT", then=F("amount")),
+                    default=Decimal("0.00"),
+                    output_field=DecimalField(),
+                )
+            ),
+        )
+        total_in = agg["total_in"] or Decimal("0.00")
+        total_out = agg["total_out"] or Decimal("0.00")
+        return self.opening_amount + total_in - total_out
 
     
 class CashMovement(models.Model):
@@ -202,7 +217,16 @@ class PawnContract(models.Model):
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
 
-    # Cliente (MVP: texto; luego lo normalizamos en tabla Client)
+    # Cliente normalizado (FK). Los campos de texto se mantienen por compatibilidad
+    # con contratos anteriores a la implementación del módulo Cliente.
+    customer = models.ForeignKey(
+        "Customer",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="contracts",
+    )
+    # Campos legacy (texto libre) — se rellenan automáticamente desde Customer al crear
     customer_full_name = models.CharField(max_length=120)
     customer_ci = models.CharField(max_length=30, blank=True, default="")
 
@@ -227,6 +251,14 @@ class PawnContract(models.Model):
         return self.contract_number
     
     interest_accrued_until = models.DateField(null=True, blank=True)
+    
+    investor = models.ForeignKey(
+        "Investor",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="contracts"
+    )
 
 
 class PawnPayment(models.Model):
@@ -272,8 +304,6 @@ class PawnRenewal(models.Model):
     note = models.CharField(max_length=255, blank=True, default="")
 
 
-
-
 class PawnItem(models.Model):
     class Category(models.TextChoices):
         LAPTOP = "LAPTOP", "Laptop"
@@ -309,3 +339,255 @@ class PawnItem(models.Model):
 
     def __str__(self):
         return f"{self.category} - {self.contract.contract_number}"
+
+
+class Transfer(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pendiente"
+        COMPLETED = "COMPLETED", "Completado"
+        REJECTED = "REJECTED", "Rechazado"
+
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    from_cash_register = models.ForeignKey(
+        CashRegister, on_delete=models.PROTECT, related_name="transfers_out"
+    )
+    to_cash_register = models.ForeignKey(
+        CashRegister, on_delete=models.PROTECT, related_name="transfers_in"
+    )
+
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="transfers_created")
+    accepted_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="transfers_accepted")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+
+    note = models.CharField(max_length=255, blank=True, default="")
+
+# MODELO INVERSIONISTA
+class Investor(models.Model):
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    full_name = models.CharField(max_length=255)
+    ci = models.CharField(max_length=50, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.full_name
+
+    
+# MODELO CUENTA DEL INVERSIONISTA
+class InvestorAccount(models.Model):
+    investor = models.OneToOneField(Investor, on_delete=models.CASCADE, related_name="account")
+
+    balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+# MODELO MOVIMIENTOS DEL INVERSIONISTA (LEDGER)
+class InvestorMovement(models.Model):
+    class MovementType(models.TextChoices):
+        DEPOSIT = "DEPOSIT", "Ingreso"
+        ASSIGN = "ASSIGN", "Asignado a contrato"
+        RETURN = "RETURN", "Retorno de capital"
+        PROFIT = "PROFIT", "Ganancia"
+        WITHDRAW = "WITHDRAW", "Retiro"
+
+    investor = models.ForeignKey(Investor, on_delete=models.PROTECT, related_name="movements")
+
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    movement_type = models.CharField(max_length=20, choices=MovementType.choices)
+
+    related_contract = models.ForeignKey(
+        "PawnContract",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    note = models.CharField(max_length=255, blank=True)
+
+
+# ─────────────────────────────────────────────
+# MÓDULO CLIENTE (KYC + Scoring + WhatsApp)
+# ─────────────────────────────────────────────
+
+class Customer(models.Model):
+    """
+    Cliente normalizado con KYC completo, scoring de fidelidad
+    y línea de crédito dinámica.
+    """
+    class Category(models.TextChoices):
+        BRONCE = "BRONCE", "Bronce"
+        PLATA  = "PLATA",  "Plata"
+        ORO    = "ORO",    "Oro"
+
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    # ── Identidad (KYC) ──────────────────────────────
+    ci = models.CharField(
+        max_length=30, unique=True, db_index=True,
+        help_text="Cédula de identidad — llave única del cliente",
+    )
+    first_name          = models.CharField(max_length=80)
+    last_name_paternal  = models.CharField(max_length=80)
+    last_name_maternal  = models.CharField(max_length=80, blank=True, default="")
+    birth_date          = models.DateField(help_text="Necesaria para validar mayoría de edad")
+
+    # ── Fotografías (Pillow / ImageField) ────────────
+    photo_face = models.ImageField(
+        upload_to="customers/faces/%Y/%m/",
+        null=True, blank=True,
+        help_text="Foto del rostro del cliente",
+    )
+    photo_ci = models.ImageField(
+        upload_to="customers/ci_docs/%Y/%m/",
+        null=True, blank=True,
+        help_text="Foto/escaneo del documento de identidad",
+    )
+
+    # ── Contacto y ubicación ─────────────────────────
+    phone   = models.CharField(max_length=20, help_text="Formato internacional: +591XXXXXXXX")
+    email   = models.EmailField(blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    gps_lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    gps_lon = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+
+    # ── Estado / lista negra ─────────────────────────
+    is_blacklisted   = models.BooleanField(default=False)
+    blacklist_reason = models.TextField(blank=True, default="")
+
+    # ── Scoring BI ───────────────────────────────────
+    category = models.CharField(
+        max_length=10, choices=Category.choices, default=Category.BRONCE,
+    )
+    score = models.IntegerField(
+        default=50,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text="Puntaje 0-100 calculado por el motor de scoring",
+    )
+
+    # ── Contadores desnormalizados (performance) ─────
+    total_contracts        = models.PositiveIntegerField(default=0)
+    late_payments_count    = models.PositiveIntegerField(default=0)
+    on_time_payments_count = models.PositiveIntegerField(default=0)
+
+    # ── Auditoría ────────────────────────────────────
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="customers_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Cliente"
+        verbose_name_plural = "Clientes"
+
+    def __str__(self):
+        return f"{self.full_name} (CI: {self.ci})"
+
+    @property
+    def full_name(self) -> str:
+        parts = [self.first_name, self.last_name_paternal]
+        if self.last_name_maternal:
+            parts.append(self.last_name_maternal)
+        return " ".join(parts)
+
+    @property
+    def risk_color(self) -> str:
+        """Verde ≥ 70 | Amarillo 40-69 | Rojo < 40"""
+        if self.score >= 70:
+            return "GREEN"
+        if self.score >= 40:
+            return "YELLOW"
+        return "RED"
+
+    @property
+    def age(self) -> int:
+        from datetime import date
+        today = date.today()
+        b = self.birth_date
+        return today.year - b.year - ((today.month, today.day) < (b.month, b.day))
+
+
+class CustomerReference(models.Model):
+    """
+    Persona de referencia del cliente (familiar o amigo de confianza).
+    """
+    customer     = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="references")
+    full_name    = models.CharField(max_length=120)
+    phone        = models.CharField(max_length=20)
+    relationship = models.CharField(max_length=60, blank=True, default="",
+                                    help_text="Familiar, Amigo, Colega, etc.")
+
+    class Meta:
+        verbose_name = "Referencia de Cliente"
+        verbose_name_plural = "Referencias de Cliente"
+
+    def __str__(self):
+        return f"{self.full_name} → {self.customer.ci}"
+
+
+class WhatsAppMessage(models.Model):
+    """
+    Cola de mensajes WhatsApp Business.
+    Cada registro es un intento de envío (pendiente, enviado, leído, fallido).
+    El procesamiento real se hace en un worker/management command.
+    """
+    class Status(models.TextChoices):
+        PENDING   = "PENDING",   "Pendiente de envío"
+        SENT      = "SENT",      "Enviado"
+        DELIVERED = "DELIVERED", "Entregado"
+        READ      = "READ",      "Leído"
+        FAILED    = "FAILED",    "Fallido"
+
+    class EventType(models.TextChoices):
+        DUE_REMINDER    = "DUE_REMINDER",    "Recordatorio Vencimiento (3 días)"
+        OVERDUE_NOTICE  = "OVERDUE_NOTICE",  "Aviso de Mora"
+        PAYMENT_CONFIRM = "PAYMENT_CONFIRM", "Confirmación de Pago"
+        WELCOME         = "WELCOME",         "Bienvenida"
+
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name="whatsapp_messages",
+    )
+    contract = models.ForeignKey(
+        "PawnContract", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="whatsapp_messages",
+    )
+
+    event_type = models.CharField(max_length=30, choices=EventType.choices)
+    status     = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+
+    # Snapshot del número al momento de encolar (para auditoría)
+    phone_to     = models.CharField(max_length=20)
+    message_body = models.TextField()
+
+    scheduled_for = models.DateTimeField(help_text="Cuándo debe enviarse este mensaje")
+    sent_at       = models.DateTimeField(null=True, blank=True)
+
+    # Respuesta de la API de WhatsApp
+    wa_message_id = models.CharField(max_length=100, blank=True, default="")
+    error_log     = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Mensaje WhatsApp"
+        verbose_name_plural = "Cola de WhatsApp"
+        indexes = [
+            # Índice compuesto para el worker: mensajes pendientes ordenados por fecha
+            models.Index(fields=["status", "scheduled_for"], name="wa_status_schedule_idx"),
+        ]
+
+    def __str__(self):
+        return f"[{self.status}] {self.event_type} → {self.customer.ci}"

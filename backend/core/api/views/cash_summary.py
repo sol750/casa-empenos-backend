@@ -23,11 +23,11 @@ class CashSessionSummaryView(APIView):
             if session.branch.code not in allowed:
                 return Response({"detail": "Sin acceso a esta sucursal"}, status=403)
 
-        # 🔹 Movimientos
+        # 🔹 Movimientos: _IN suman, _OUT restan (todos los montos son positivos)
         movements = CashMovement.objects.filter(cash_session=session)
 
-        total_in = movements.filter(amount__gt=0).aggregate(total=Sum("amount"))["total"] or 0
-        total_out = movements.filter(amount__lt=0).aggregate(total=Sum("amount"))["total"] or 0
+        total_in = movements.filter(movement_type__endswith="_IN").aggregate(total=Sum("amount"))["total"] or 0
+        total_out = movements.filter(movement_type__endswith="_OUT").aggregate(total=Sum("amount"))["total"] or 0
 
         # 🔹 Contratos creados
         contracts_count = PawnContract.objects.filter(disbursed_cash_session=session).count()
@@ -49,7 +49,7 @@ class CashSessionSummaryView(APIView):
             "cash_flow": {
                 "total_in": str(total_in),
                 "total_out": str(total_out),
-                "balance": str(total_in + total_out),
+                "net": str(total_in - total_out),
             },
 
             "operations": {
