@@ -21,6 +21,7 @@ class PawnContractCreateSerializer(serializers.Serializer):
     )
 
     promo_note = serializers.CharField(required=False, allow_blank=True, default="")
+    
 
     # ✅ ITEMS
     items = PawnItemCreateSerializer(many=True)

@@ -1,15 +1,19 @@
-from decimal import Decimal
+from django.utils import timezone
 from django.db import transaction
-from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework.views import APIView
 
-from core.models import CashRegister, CashSession, CashMovement
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status
+
+from core.models import Transfer, CashRegister, CashSession, CashMovement
 from core.api.serializers.transfer import TransferCreateSerializer
 from core.api.security import require_roles
 
 
+# ==============================
+# CREAR TRANSFERENCIA (OWNER)
+# ==============================
 class TransferCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -17,80 +21,95 @@ class TransferCreateView(APIView):
         serializer = TransferCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        # 1) Solo OWNER_ADMIN
+        require_roles(request.user, {"OWNER_ADMIN"})
+
+        from_cr = CashRegister.objects.get(
+            public_id=serializer.validated_data["from_cash_register_id"]
+        )
+        to_cr = CashRegister.objects.get(
+            public_id=serializer.validated_data["to_cash_register_id"]
+        )
+
+        transfer = Transfer.objects.create(
+            from_cash_register=from_cr,
+            to_cash_register=to_cr,
+            amount=serializer.validated_data["amount"],
+            created_by=request.user,
+            note=serializer.validated_data.get("note", "")
+        )
+
+        return Response({
+            "transfer_id": str(transfer.public_id),
+            "status": transfer.status
+        }, status=status.HTTP_201_CREATED)
+
+
+# ==============================
+# ACEPTAR TRANSFERENCIA (CAJERO)
+# ==============================
+class TransferAcceptView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, transfer_id):
+
         try:
-            require_roles(request.user, {"OWNER_ADMIN"})
-        except Exception as e:
-            return Response({"detail": "Solo OWNER_ADMIN puede transferir fondos."}, status=status.HTTP_403_FORBIDDEN)
+            transfer = Transfer.objects.get(public_id=transfer_id)
+        except Transfer.DoesNotExist:
+            return Response({"detail": "Transferencia no encontrada"}, status=404)
 
-        from_id = serializer.validated_data["from_cash_register_id"]
-        to_id = serializer.validated_data["to_cash_register_id"]
-        amount = serializer.validated_data["amount"]
-        note = serializer.validated_data.get("note", "")
+        if transfer.status != Transfer.Status.PENDING:
+            return Response({"detail": "Transferencia ya procesada"}, status=400)
 
-        if from_id == to_id:
-            return Response(
-                {"detail": "La caja origen y destino no pueden ser la misma."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # 2) Obtener cajas
-        try:
-            from_cr = CashRegister.objects.select_related("branch").get(public_id=from_id)
-            to_cr = CashRegister.objects.select_related("branch").get(public_id=to_id)
-        except CashRegister.DoesNotExist:
-            return Response({"detail": "Caja no encontrada."}, status=status.HTTP_404_NOT_FOUND)
-
-        # 3) Requiere sesiones abiertas en ambas cajas (con bloqueo)
         with transaction.atomic():
+
             from_session = (
-                CashSession.objects.select_for_update()
-                .filter(cash_register=from_cr, status=CashSession.Status.OPEN)
-                .first()
-            )
-            to_session = (
-                CashSession.objects.select_for_update()
-                .filter(cash_register=to_cr, status=CashSession.Status.OPEN)
-                .first()
-            )
-
-            if not from_session:
-                return Response({"detail": "La caja origen no tiene sesión abierta."}, status=status.HTTP_409_CONFLICT)
-            if not to_session:
-                return Response({"detail": "La caja destino no tiene sesión abierta."}, status=status.HTTP_409_CONFLICT)
-
-            # 4) Validar fondos en origen usando tu expected_balance (auditable)
-            expected_from = from_session.expected_balance
-            if expected_from < amount:
-                return Response(
-                    {"detail": "Fondos insuficientes en caja origen.", "expected_balance": str(expected_from)},
-                    status=status.HTTP_409_CONFLICT,
+                CashSession.objects
+                .select_for_update()
+                .filter(
+                    cash_register=transfer.from_cash_register,
+                    status=CashSession.Status.OPEN
                 )
+                .first()
+            )
 
-            # 5) Registrar movimientos (convención: IN positivo, OUT negativo)
-            amount = Decimal(amount)
+            to_session = (
+                CashSession.objects
+                .select_for_update()
+                .filter(
+                    cash_register=transfer.to_cash_register,
+                    status=CashSession.Status.OPEN
+                )
+                .first()
+            )
 
+            if not from_session or not to_session:
+                return Response({"detail": "Sesión no abierta"}, status=409)
+
+            # SALIDA
             CashMovement.objects.create(
                 cash_session=from_session,
-                cash_register=from_cr,
-                branch=from_cr.branch,
+                cash_register=transfer.from_cash_register,
+                branch=transfer.from_cash_register.branch,
                 movement_type=CashMovement.MovementType.TRANSFER_OUT,
-                amount=amount,
+                amount=transfer.amount,
                 performed_by=request.user,
-                note=note,
+                note=f"Transferencia enviada {transfer.public_id}"
             )
 
+            # ENTRADA
             CashMovement.objects.create(
                 cash_session=to_session,
-                cash_register=to_cr,
-                branch=to_cr.branch,
+                cash_register=transfer.to_cash_register,
+                branch=transfer.to_cash_register.branch,
                 movement_type=CashMovement.MovementType.TRANSFER_IN,
-                amount=amount,
+                amount=transfer.amount,
                 performed_by=request.user,
-                note=note,
+                note=f"Transferencia recibida {transfer.public_id}"
             )
 
-        return Response(
-            {"detail": "Transferencia registrada.", "amount": str(amount)},
-            status=status.HTTP_201_CREATED,
-        )
+            transfer.status = Transfer.Status.COMPLETED
+            transfer.accepted_by = request.user
+            transfer.accepted_at = timezone.now()
+            transfer.save()
+
+        return Response({"detail": "Transferencia aceptada"})
