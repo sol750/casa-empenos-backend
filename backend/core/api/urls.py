@@ -28,6 +28,11 @@ from core.api.views.pawn_renewal import PawnRenewalCreateView
 from core.api.views.reports_daily_summary import DailySummaryReportView
 from core.api.views.reports_daily_summary_pdf import DailySummaryReportPDFView
 from core.api.views.reports_risk_concentration import RiskConcentrationReportView
+from core.api.views.reports_default_summary import DefaultSummaryReportView
+
+# ── Mora ──────────────────────────────────────────────────────────────────────
+from core.api.views.pawn_contract_defaulted import PawnContractDefaultedView
+from core.api.views.process_defaults_api import ProcessDefaultsView
 
 # ── Clientes / KYC / WhatsApp ─────────────────────────────────────────────────
 from core.api.views.customer import (
@@ -85,12 +90,15 @@ urlpatterns = [
     path("pawn-contracts/list",                        PawnContractListView.as_view()),
     path("pawn-contracts/payments",                    PawnPaymentCreateView.as_view()),
     path("pawn-contracts/renew",                       PawnRenewalCreateView.as_view()),
+    path("pawn-contracts/defaulted",                   PawnContractDefaultedView.as_view()),
+    path("pawn-contracts/process-defaults",            ProcessDefaultsView.as_view()),
     path("pawn-contracts/<uuid:contract_id>",          PawnContractDetailView.as_view()),
 
     # ── Reportes ──────────────────────────────────────────────────────────────
     path("reports/daily-summary",                      DailySummaryReportView.as_view()),
     path("reports/daily-summary.pdf",                  DailySummaryReportPDFView.as_view()),
     path("reports/risk-concentration",                 RiskConcentrationReportView.as_view()),
+    path("reports/default-summary",                    DefaultSummaryReportView.as_view()),
 
     # ── Clientes (KYC + Scoring) ──────────────────────────────────────────────
     path("customers",                                  CustomerListCreateView.as_view()),

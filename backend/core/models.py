@@ -15,6 +15,12 @@ class Branch(models.Model):
     code = models.CharField(max_length=20, unique=True)  # ej: PT1, PT2
     is_active = models.BooleanField(default=True)
 
+    # Días de gracia antes de marcar un contrato como DEFAULTED
+    grace_period_days = models.PositiveSmallIntegerField(
+        default=30,
+        help_text="Días hábiles de gracia tras el vencimiento antes de pasar a mora.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -271,9 +277,15 @@ class PawnContract(models.Model):
     # Caja / desembolso
     disbursed_cash_session = models.ForeignKey(CashSession, on_delete=models.PROTECT, related_name="pawn_disbursements")
 
+    # Mora automática
+    defaulted_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Fecha/hora en que el contrato fue marcado automáticamente como DEFAULTED.",
+    )
+
     def __str__(self):
         return self.contract_number
-    
+
     interest_accrued_until = models.DateField(null=True, blank=True)
     
     investor = models.ForeignKey(

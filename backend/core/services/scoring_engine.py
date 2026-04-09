@@ -83,6 +83,60 @@ def apply_contract_closure_score(contract: "PawnContract") -> dict:
     }
 
 
+def apply_default_penalty(contract: "PawnContract") -> dict:
+    """
+    Aplica penalización al score cuando un contrato pasa a DEFAULTED.
+
+    Penalización: -20 puntos fijos + -2 por cada día de mora (cap -50 total).
+    El cliente sube su contador late_payments_count.
+    Nunca lanza excepción: ante cualquier error retorna applied=False.
+    """
+    from datetime import date
+    from core.models import Customer
+
+    customer = getattr(contract, "customer", None)
+    if customer is None:
+        return {"applied": False, "reason": "sin_cliente_vinculado"}
+
+    today = date.today()
+    days_overdue = (today - contract.due_date).days
+    if days_overdue < 0:
+        days_overdue = 0
+
+    # -20 base + -2 por día, capped a -50
+    delta = max(-50, -20 - (2 * days_overdue))
+
+    old_score    = customer.score
+    old_category = customer.category
+
+    customer.score = max(0, min(100, customer.score + delta))
+    customer.late_payments_count += 1
+
+    if customer.score >= 80:
+        customer.category = Customer.Category.ORO
+    elif customer.score >= 50:
+        customer.category = Customer.Category.PLATA
+    else:
+        customer.category = Customer.Category.BRONCE
+
+    customer.save(update_fields=[
+        "score", "category",
+        "late_payments_count",
+        "updated_at",
+    ])
+
+    return {
+        "applied":      True,
+        "delta":        delta,
+        "days_overdue": days_overdue,
+        "old_score":    old_score,
+        "new_score":    customer.score,
+        "old_category": old_category,
+        "new_category": customer.category,
+        "risk_color":   customer.risk_color,
+    }
+
+
 def increment_contract_count(customer) -> None:
     """
     Incrementa el contador de contratos al crear uno nuevo.
