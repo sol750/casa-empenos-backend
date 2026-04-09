@@ -39,10 +39,14 @@ class BranchCounter(models.Model):
 
 class CashRegister(models.Model):
     """
-    Caja física/lógica. Puede ser de sucursal o global.
+    Caja física/lógica.
+      BRANCH → caja operativa de sucursal (C1, C2)
+      VAULT  → bóveda de sucursal (CB) para resguardo de excedente
+      GLOBAL → caja maestra del dueño / tesoro central
     """
     class RegisterType(models.TextChoices):
-        BRANCH = "BRANCH", "Sucursal"
+        BRANCH = "BRANCH", "Caja Sucursal"
+        VAULT  = "VAULT",  "Bóveda"
         GLOBAL = "GLOBAL", "Global"
     
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
@@ -62,15 +66,29 @@ class CashRegister(models.Model):
     )
     is_active = models.BooleanField(default=True)
 
+    # Umbrales operativos (Bs.) — configurables por caja
+    min_balance = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("1000.00"),
+        help_text="Mínimo operativo. Si el saldo baja de aquí se genera alerta de fondeo.",
+    )
+    max_balance = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("4000.00"),
+        help_text="Máximo operativo. Si el saldo sube de aquí se genera alerta de saturación.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         verbose_name = "Caja"
         verbose_name_plural = "Cajas"
         constraints = [
-            # Si es BRANCH, branch NO puede ser null
+            # BRANCH y VAULT requieren sucursal; GLOBAL no
             models.CheckConstraint(
-                check=Q(register_type="GLOBAL", branch__isnull=True) | Q(register_type="BRANCH", branch__isnull=False),
+                check=(
+                    Q(register_type="GLOBAL", branch__isnull=True)
+                    | Q(register_type="BRANCH", branch__isnull=False)
+                    | Q(register_type="VAULT",  branch__isnull=False)
+                ),
                 name="cashregister_branch_required_when_branch_type",
             )
         ]
@@ -166,12 +184,18 @@ class CashMovement(models.Model):
     Base para auditoría y cálculo de expected.
     """
     class MovementType(models.TextChoices):
-        TRANSFER_IN = "TRANSFER_IN", "Transferencia Entrante"
-        TRANSFER_OUT = "TRANSFER_OUT", "Transferencia Saliente"
-        ADJUSTMENT_IN = "ADJUSTMENT_IN", "Ajuste Sobrante"
+        # ── Existentes ──────────────────────────────────────────────
+        TRANSFER_IN    = "TRANSFER_IN",    "Transferencia Entrante"
+        TRANSFER_OUT   = "TRANSFER_OUT",   "Transferencia Saliente"
+        ADJUSTMENT_IN  = "ADJUSTMENT_IN",  "Ajuste Sobrante"
         ADJUSTMENT_OUT = "ADJUSTMENT_OUT", "Ajuste Faltante"
-        LOAN_OUT = "LOAN_OUT", "Desembolso Préstamo"
-        PAYMENT_IN = "PAYMENT_IN", "Pago/Abono"
+        LOAN_OUT       = "LOAN_OUT",       "CN – Desembolso de Contrato"
+        PAYMENT_IN     = "PAYMENT_IN",     "CC/UC – Cobro de Contrato"
+        # ── Nuevos ──────────────────────────────────────────────────
+        PURCHASE_OUT   = "PURCHASE_OUT",   "CD – Compra Directa"
+        EXPENSE_OUT    = "EXPENSE_OUT",    "G – Gasto Operativo"
+        VAULT_IN       = "VAULT_IN",       "Ingreso a Bóveda"
+        VAULT_OUT      = "VAULT_OUT",      "Salida de Bóveda"
 
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
@@ -373,7 +397,13 @@ class Investor(models.Model):
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
     full_name = models.CharField(max_length=255)
-    ci = models.CharField(max_length=50, blank=True)
+    ci        = models.CharField(max_length=50, blank=True)
+
+    # % acordado de las utilidades generadas por sus contratos
+    profit_rate_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("50.00"),
+        help_text="Porcentaje de la utilidad (interés) que corresponde al inversionista. Ej: 50.00 = 50%",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -591,3 +621,101 @@ class WhatsAppMessage(models.Model):
 
     def __str__(self):
         return f"[{self.status}] {self.event_type} → {self.customer.ci}"
+
+
+# ─────────────────────────────────────────────
+# FLUJO DE CAJA AVANZADO
+# ─────────────────────────────────────────────
+
+class CashDenomination(models.Model):
+    """
+    Matriz de denominaciones (billetes y monedas) registrada en
+    la apertura y en el cierre de cada sesión de caja.
+
+    Permite al sistema comparar el conteo físico contra el saldo
+    lógico calculado y detectar diferencias al céntimo.
+    """
+    class DenomType(models.TextChoices):
+        OPENING = "OPENING", "Apertura"
+        CLOSING = "CLOSING", "Cierre"
+
+    cash_session = models.ForeignKey(
+        CashSession, on_delete=models.PROTECT, related_name="denominations",
+    )
+    denom_type   = models.CharField(max_length=10, choices=DenomType.choices)
+
+    # ── Billetes (Bs.) ────────────────────────────────────────────
+    b_200 = models.PositiveIntegerField(default=0, verbose_name="Billetes Bs.200")
+    b_100 = models.PositiveIntegerField(default=0, verbose_name="Billetes Bs.100")
+    b_50  = models.PositiveIntegerField(default=0, verbose_name="Billetes Bs.50")
+    b_20  = models.PositiveIntegerField(default=0, verbose_name="Billetes Bs.20")
+    b_10  = models.PositiveIntegerField(default=0, verbose_name="Billetes Bs.10")
+
+    # ── Monedas (Bs.) ─────────────────────────────────────────────
+    c_5   = models.PositiveIntegerField(default=0, verbose_name="Monedas Bs.5")
+    c_2   = models.PositiveIntegerField(default=0, verbose_name="Monedas Bs.2")
+    c_1   = models.PositiveIntegerField(default=0, verbose_name="Monedas Bs.1")
+
+    counted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="denominations_counted",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Denominación de Caja"
+        verbose_name_plural = "Denominaciones de Caja"
+        unique_together = [("cash_session", "denom_type")]  # un conteo por tipo por sesión
+
+    @property
+    def total(self) -> Decimal:
+        return (
+            Decimal(self.b_200) * 200 + Decimal(self.b_100) * 100
+            + Decimal(self.b_50) * 50 + Decimal(self.b_20) * 20
+            + Decimal(self.b_10) * 10 + Decimal(self.c_5) * 5
+            + Decimal(self.c_2) * 2  + Decimal(self.c_1) * 1
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "b_200": self.b_200, "b_100": self.b_100,
+            "b_50":  self.b_50,  "b_20":  self.b_20, "b_10": self.b_10,
+            "c_5":   self.c_5,   "c_2":   self.c_2,  "c_1":  self.c_1,
+            "total": str(self.total),
+        }
+
+    def __str__(self):
+        return f"{self.denom_type} | {self.cash_session} | Bs.{self.total}"
+
+
+class CashExpense(models.Model):
+    """
+    Detalle de un gasto operativo (movimiento tipo EXPENSE_OUT).
+    Vinculado 1:1 con el CashMovement correspondiente.
+    Requiere descripción y permite adjuntar recibo.
+    """
+    class Category(models.TextChoices):
+        UTILITIES   = "UTILITIES",   "Servicios (luz, agua, internet)"
+        CLEANING    = "CLEANING",    "Limpieza"
+        SUPPLIES    = "SUPPLIES",    "Útiles de oficina"
+        MAINTENANCE = "MAINTENANCE", "Mantenimiento"
+        SALARY      = "SALARY",      "Salario / Honorario"
+        OTHER       = "OTHER",       "Otro"
+
+    public_id     = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    cash_movement = models.OneToOneField(
+        CashMovement, on_delete=models.PROTECT, related_name="expense_detail",
+    )
+    category    = models.CharField(max_length=20, choices=Category.choices, default=Category.OTHER)
+    description = models.TextField(help_text="Descripción obligatoria del gasto")
+    receipt     = models.ImageField(
+        upload_to="expenses/receipts/%Y/%m/", null=True, blank=True,
+        help_text="Foto o escaneo del comprobante",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Gasto Operativo"
+        verbose_name_plural = "Gastos Operativos"
+
+    def __str__(self):
+        return f"[{self.category}] {self.description[:40]} – {self.cash_movement.amount} Bs."

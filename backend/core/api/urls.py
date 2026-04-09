@@ -12,6 +12,8 @@ from core.api.views.cash import CashSessionBalanceView
 from core.api.views.cash_register import CashRegisterListView
 from core.api.views.cash_register_balance import CashRegisterBalancesView
 from core.api.views.cash_register_alerts import CashRegisterAlertsView
+from core.api.views.cash_denomination import CashDenominationView
+from core.api.views.cash_expense import CashExpenseView, CashPurchaseView
 from core.api.views.dashboard import CashDashboardView
 from core.api.views.transfer import TransferCreateView, TransferAcceptView
 
@@ -57,6 +59,7 @@ urlpatterns = [
     # ── Cajas ─────────────────────────────────────────────────────────────────
     path("cash-registers",                             CashRegisterListView.as_view()),
     path("cash-registers/balances",                    CashRegisterBalancesView.as_view()),
+    path("cash-registers/balance",                     CashRegisterBalancesView.as_view()),  # alias singular
     path("cash-registers/alerts",                      CashRegisterAlertsView.as_view()),
 
     path("cash-sessions/open",                         OpenCashSessionView.as_view()),
@@ -65,8 +68,11 @@ urlpatterns = [
     path("cash-sessions/current",                      CurrentCashSessionView.as_view()),
     path("cash-sessions/<uuid:session_id>/summary",    CashSessionSummaryView.as_view()),
     path("cash-sessions/<uuid:session_id>/balance",    CashSessionBalanceView.as_view()),
-    path("cash-sessions/<uuid:cash_session_id>/movements",      CashSessionMovementsView.as_view()),
+    path("cash-sessions/<uuid:cash_session_id>/movements",          CashSessionMovementsView.as_view()),
     path("cash-sessions/<uuid:cash_session_id>/closing-report.pdf", CashSessionClosingReportPDFView.as_view()),
+    path("cash-sessions/<uuid:session_id>/denomination",             CashDenominationView.as_view()),
+    path("cash-sessions/<uuid:session_id>/expenses",                 CashExpenseView.as_view()),
+    path("cash-sessions/<uuid:session_id>/purchases",                CashPurchaseView.as_view()),
 
     path("transfers",                                  TransferCreateView.as_view()),
     path("transfers/<uuid:transfer_id>/accept",        TransferAcceptView.as_view()),

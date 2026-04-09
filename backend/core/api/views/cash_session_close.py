@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from core.api.serializers.cash_session_close import CashSessionCloseSerializer
 from core.models import CashSession, CashMovement
 from core.models_security import UserRole
+from core.services.cash_alerts import calculate_surplus
 
 
 class CashSessionCloseView(APIView):
@@ -66,13 +67,18 @@ class CashSessionCloseView(APIView):
                     note="Ajuste automático por cierre de caja",
                 )
 
+        # Calcular desglose del excedente para el reporte de cierre
+        surplus = calculate_surplus(cash_session)
+
         return Response(
             {
-                "detail": "Caja cerrada correctamente.",
-                "expected_amount": str(expected_amount),
-                "counted_amount": str(counted_amount),
-                "difference": str(diff),
-                "report_url": f"/api/cash-sessions/{cash_session.public_id}/closing-report.pdf",
+                "detail":           "Caja cerrada correctamente.",
+                "expected_amount":  str(expected_amount),
+                "counted_amount":   str(counted_amount),
+                "difference":       str(diff),
+                "report_url":       f"/api/cash-sessions/{cash_session.public_id}/closing-report.pdf",
+                # Desglose financiero del turno
+                "surplus_breakdown": surplus,
             },
             status=200,
         )

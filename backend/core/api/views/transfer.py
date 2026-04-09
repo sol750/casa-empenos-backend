@@ -112,4 +112,15 @@ class TransferAcceptView(APIView):
             transfer.accepted_at = timezone.now()
             transfer.save()
 
-        return Response({"detail": "Transferencia aceptada"})
+        return Response({
+            "detail": "Transferencia aceptada.",
+            "transfer": {
+                "transfer_id":          str(transfer.public_id),
+                "from_cash_register_id": str(transfer.from_cash_register.public_id),
+                "to_cash_register_id":   str(transfer.to_cash_register.public_id),
+                "amount":               str(transfer.amount),
+                "status":               transfer.status,
+                "accepted_at":          transfer.accepted_at,
+                "note":                 transfer.note,
+            },
+        })

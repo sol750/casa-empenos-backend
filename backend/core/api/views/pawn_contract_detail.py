@@ -26,7 +26,12 @@ class PawnContractDetailView(APIView):
 
         # 2) Traer contrato y validar existencia
         try:
-            contract = PawnContract.objects.select_related("branch").get(public_id=contract_id)
+            contract = (
+                PawnContract.objects
+                .select_related("branch", "customer")
+                .prefetch_related("items", "payments", "renewals")
+                .get(public_id=contract_id)
+            )
         except PawnContract.DoesNotExist:
             return Response({"detail": "Contrato no encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -54,39 +59,61 @@ class PawnContractDetailView(APIView):
             to_date=today,
         )
 
-        payments = list(
-            contract.payments.order_by("paid_at").values(
-                "paid_at", "amount", "interest_paid", "principal_paid", "note"
-            )
-        )
-        renewals = list(
-            contract.renewals.order_by("renewed_at").values(
-                "renewed_at",
-                "previous_due_date",
-                "new_due_date",
-                "amount_charged",
-                "interest_charged",
-                "fee_charged",
-                "note",
-            )
-        )
+        # ── Pagos: nombres de campo ajustados a lo que espera el frontend ───
+        payments = [
+            {
+                "payment_date":  p.paid_at,          # alias de paid_at
+                "amount":        str(p.amount),
+                "principal_paid": str(p.principal_paid),
+                "interest_paid":  str(p.interest_paid),
+                "note":          p.note,
+            }
+            for p in contract.payments.order_by("paid_at")
+        ]
+
+        # ── Renovaciones ──────────────────────────────────────────────────────
+        renewals = [
+            {
+                "new_due_date":     str(r.new_due_date),
+                "created_at":       r.renewed_at,    # alias de renewed_at
+                "note":             r.note,
+                "interest_charged": str(r.interest_charged),
+                "fee_charged":      str(r.fee_charged),
+                "amount_charged":   str(r.amount_charged),
+            }
+            for r in contract.renewals.order_by("renewed_at")
+        ]
+
+        # ── Artículos empeñados ───────────────────────────────────────────────
+        items = [
+            {
+                "category":        item.category,
+                "description":     item.description,
+                "attributes":      item.attributes,
+                "has_box":         item.has_box,
+                "has_charger":     item.has_charger,
+                "condition_notes": item.observations,  # alias de observations
+            }
+            for item in contract.items.all()
+        ]
 
         return Response(
             {
-                "pawn_contract_id": str(contract.public_id),
-                "contract_number": contract.contract_number,
-                "status": contract.status,
-                "branch_code": contract.branch.code,
-                "customer_full_name": contract.customer_full_name,
-                "customer_ci": contract.customer_ci,
-                "principal_amount": str(contract.principal_amount),
-                "principal_paid_total": str(principal_paid_total),
+                "pawn_contract_id":      str(contract.public_id),
+                "contract_number":       contract.contract_number,
+                "status":                contract.status,
+                "branch_code":           contract.branch.code,
+                "customer_full_name":    contract.customer_full_name,
+                "customer_ci":           contract.customer_ci,
+                "principal_amount":      str(contract.principal_amount),
+                "principal_paid_total":  str(principal_paid_total),
                 "outstanding_principal": str(outstanding_principal),
                 "interest_rate_monthly": str(contract.interest_rate_monthly),
-                "start_date": str(contract.start_date),
-                "due_date": str(contract.due_date),
+                "start_date":            str(contract.start_date),
+                "due_date":              str(contract.due_date),
                 "interest_accrued_until": str(from_date),
-                "interest_accrued_now": str(interest_accrued_now),
+                "interest_accrued_now":  str(interest_accrued_now),
+                "items":    items,     # ← CRÍTICO: artículos empeñados
                 "payments": payments,
                 "renewals": renewals,
             }
