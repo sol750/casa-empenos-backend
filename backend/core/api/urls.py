@@ -54,6 +54,7 @@ from core.api.views.me import MeView
 from core.api.views.users_admin import UserListCreateView, UserDetailUpdateView
 from core.api.views.meta import RolesMetaView, BranchesMetaView
 from core.api.views.investor import InvestorCreateView
+from core.api.views.investor_account import InvestorAccountView
 
 
 urlpatterns = [
@@ -113,10 +114,14 @@ urlpatterns = [
     path("whatsapp/pending",                           WhatsAppPendingListView.as_view()),
     path("whatsapp/<uuid:public_id>/mark-sent",        WhatsAppMarkSentView.as_view()),
 
-    # ── Usuarios / Meta / Inversores ──────────────────────────────────────────
+    # ── Usuarios / Meta ───────────────────────────────────────────────────────
     path("users",                                      UserListCreateView.as_view()),
     path("users/<int:user_id>",                        UserDetailUpdateView.as_view()),
     path("meta/roles",                                 RolesMetaView.as_view()),
     path("meta/branches",                              BranchesMetaView.as_view()),
-    path("investor",                                   InvestorCreateView.as_view()),
+
+    # ── Inversores ────────────────────────────────────────────────────────────
+    path("investor",                                   InvestorCreateView.as_view()),   # legacy singular
+    path("investors",                                  InvestorCreateView.as_view()),   # alias plural GET/POST
+    path("investors/<uuid:investor_id>/account",       InvestorAccountView.as_view()),
 ]
