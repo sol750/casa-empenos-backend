@@ -389,3 +389,160 @@ def calculate_liquidation(employee, termination_date: date, reason: str) -> dict
         "unused_vacation_amount": vacation_amount,
         "total_liquidation":      total,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Aguinaldo (DS 110 — "Esfuerzo Bolivia")
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Plazo legal de pago: antes del 20 de diciembre
+AGUINALDO_PAYMENT_DEADLINE_DAY   = 20
+AGUINALDO_PAYMENT_DEADLINE_MONTH = 12
+
+# Días mínimos trabajados en el año para calificar
+AGUINALDO_MINIMUM_DAYS = 90
+
+
+def calculate_aguinaldo(employee, year: int, aguinaldo_type: str = "REGULAR") -> dict:
+    """
+    Calcula el aguinaldo para un empleado en un año dado.
+
+    Normativa (DS 110, DS 1802 y concordantes):
+    ─────────────────────────────────────────────
+    Base de cálculo   : sueldo básico del mes de noviembre del año en cuestión
+                        (usamos employee.base_salary como snapshot actual)
+    Período           : 1 enero – 30 noviembre (11 meses máximo para regular)
+                        Si el empleado ingresó durante el año, se cuenta desde
+                        el mes de ingreso hasta noviembre (proporcional).
+    Fórmula           : amount = (base_salary / 12) × months_in_period
+    Requisito mínimo  : 90 días trabajados en el año.
+    Doble aguinaldo   : misma fórmula pero se declara por DS específico
+                        (el dueño activa este tipo manualmente cuando proceda).
+    Medio tiempo      : el mismo cálculo aplica; el sueldo base ya refleja
+                        la jornada parcial.
+
+    Args:
+        employee       : instancia Employee
+        year           : año fiscal (ej. 2026)
+        aguinaldo_type : "REGULAR" | "DOBLE"
+
+    Returns:
+        {
+            "year":                 int,
+            "aguinaldo_type":       str,
+            "hire_date_snapshot":   date,
+            "base_salary_snapshot": Decimal,
+            "months_in_period":     Decimal,   # proporcional, máx 11
+            "days_worked_in_year":  int,        # desde AttendanceRecord
+            "qualifies":            bool,
+            "amount":               Decimal,
+            "payment_deadline":     str,        # "YYYY-12-20"
+            "legal_basis":          str,
+        }
+    """
+    from core.models_hr import AttendanceRecord
+
+    hire = employee.hire_date
+    base = employee.base_salary
+
+    # ── Período del aguinaldo: enero 1 – noviembre 30 del año ────────────────
+    period_start = date(year, 1, 1)
+    period_end   = date(year, 11, 30)
+
+    # Si el empleado ingresó después del inicio del período, ajustar
+    effective_start = max(hire, period_start)
+
+    # Si el empleado aún no había sido contratado en ese año, no califica
+    if effective_start > period_end:
+        return {
+            "year":                 year,
+            "aguinaldo_type":       aguinaldo_type,
+            "hire_date_snapshot":   hire,
+            "base_salary_snapshot": base,
+            "months_in_period":     Decimal("0"),
+            "days_worked_in_year":  0,
+            "qualifies":            False,
+            "amount":               Decimal("0.00"),
+            "payment_deadline":     f"{year}-12-20",
+            "legal_basis":          "No contratado durante el período.",
+        }
+
+    # ── Meses proporcionales (con fracciones de mes redondeadas) ─────────────
+    # Contamos los meses desde effective_start hasta el 30 de noviembre
+    # Lógica: (año_fin - año_inicio) × 12 + (mes_fin - mes_inicio) + fracción_días
+    months_whole = (
+        (period_end.year  - effective_start.year)  * 12
+        + (period_end.month - effective_start.month)
+    )
+    # Días adicionales del mes parcial de inicio
+    days_in_start_month = (
+        date(effective_start.year, effective_start.month + 1, 1)
+        - date(effective_start.year, effective_start.month, 1)
+    ).days if effective_start.month < 12 else 31
+    days_worked_start_month = days_in_start_month - effective_start.day + 1
+    partial_month = Decimal(str(days_worked_start_month)) / Decimal(str(days_in_start_month))
+
+    months_in_period = (Decimal(str(months_whole)) + partial_month).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    # Tope: 11 meses para el regular (el aguinaldo equivale a 1 sueldo completo
+    # cuando se trabajan los 11 meses del período)
+    months_in_period = min(months_in_period, Decimal("11.00"))
+
+    # ── Días efectivamente trabajados en el año (de asistencia real) ─────────
+    days_worked_in_year = AttendanceRecord.objects.filter(
+        employee=employee,
+        date__year=year,
+        date__gte=effective_start,
+        date__lte=period_end,
+        clock_out__isnull=False,          # solo días con salida registrada
+    ).count()
+
+    # Si no hay registros de asistencia, estimamos por meses (para empleados
+    # anteriores al módulo de asistencia) — usamos los días del período
+    if days_worked_in_year == 0:
+        days_worked_in_year = (period_end - effective_start).days + 1
+
+    qualifies = days_worked_in_year >= AGUINALDO_MINIMUM_DAYS
+
+    # ── Importe ───────────────────────────────────────────────────────────────
+    if qualifies:
+        amount = (base / 12 * months_in_period).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    else:
+        amount = Decimal("0.00")
+
+    legal_basis = (
+        "DS 110 – Aguinaldo obligatorio anual." if aguinaldo_type == "REGULAR"
+        else "DS 1802 y concordantes – Doble aguinaldo 'Esfuerzo Bolivia'."
+    )
+
+    return {
+        "year":                 year,
+        "aguinaldo_type":       aguinaldo_type,
+        "hire_date_snapshot":   hire,
+        "base_salary_snapshot": base,
+        "months_in_period":     months_in_period,
+        "days_worked_in_year":  days_worked_in_year,
+        "qualifies":            qualifies,
+        "amount":               amount,
+        "payment_deadline":     f"{year}-{AGUINALDO_PAYMENT_DEADLINE_MONTH:02d}-{AGUINALDO_PAYMENT_DEADLINE_DAY:02d}",
+        "legal_basis":          legal_basis,
+    }
+
+
+def generate_aguinaldo_for_all(year: int, aguinaldo_type: str = "REGULAR") -> list[dict]:
+    """
+    Calcula el aguinaldo para todos los empleados activos.
+    Devuelve una lista de dicts listos para crear AguinaldoPeriod.
+    """
+    from core.models_hr import Employee
+    employees = Employee.objects.filter(
+        status__in=[Employee.Status.ACTIVE, Employee.Status.ON_VACATION]
+    )
+    results = []
+    for emp in employees:
+        calc = calculate_aguinaldo(emp, year, aguinaldo_type)
+        results.append({"employee": emp, **calc})
+    return results

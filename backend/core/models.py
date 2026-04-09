@@ -743,4 +743,5 @@ from core.models_hr import (  # noqa: E402
     SalaryPeriod,
     VacationPeriod,
     EmployeeTermination,
+    AguinaldoPeriod,
 )

@@ -68,6 +68,11 @@ from core.api.views.hr_payroll import (
     PayrollMonthView, PayrollDetailView,
 )
 from core.api.views.hr_vacation import EmployeeVacationView, VacationDetailView
+from core.api.views.hr_aguinaldo import (
+    AguinaldoGenerateView, AguinaldoYearView, AguinaldoPreviewView,
+    AguinaldoDetailView, EmployeeAguinaldoHistoryView,
+)
+from core.api.views.reports_hr_aguinaldo import AguinaldoReportView
 from core.api.views.hr_termination import (
     EmployeeTerminationView, EmployeeAuditLogView,
 )
@@ -152,6 +157,7 @@ urlpatterns = [
     path("hr/employees/<uuid:employee_id>/vacations",  EmployeeVacationView.as_view()),
     path("hr/employees/<uuid:employee_id>/terminate",  EmployeeTerminationView.as_view()),
     path("hr/employees/<uuid:employee_id>/audit-log",  EmployeeAuditLogView.as_view()),
+    path("hr/employees/<uuid:employee_id>/aguinaldos", EmployeeAguinaldoHistoryView.as_view()),
 
     # ── RRHH — Asistencia ─────────────────────────────────────────────────────
     path("hr/attendance/clock-in",                     ClockInView.as_view()),
@@ -166,4 +172,13 @@ urlpatterns = [
 
     # ── RRHH — Vacaciones ─────────────────────────────────────────────────────
     path("hr/vacations/<int:vacation_id>",             VacationDetailView.as_view()),
+
+    # ── RRHH — Aguinaldo ─────────────────────────────────────────────────────
+    path("hr/aguinaldo/generate",                      AguinaldoGenerateView.as_view()),
+    path("hr/aguinaldo/<int:year>/preview",            AguinaldoPreviewView.as_view()),
+    path("hr/aguinaldo/<int:year>",                    AguinaldoYearView.as_view()),
+    path("hr/aguinaldo/detail/<int:aguinaldo_id>",     AguinaldoDetailView.as_view()),
+
+    # ── Reportes RRHH ────────────────────────────────────────────────────────
+    path("reports/hr/aguinaldo/<int:year>",            AguinaldoReportView.as_view()),
 ]

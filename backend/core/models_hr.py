@@ -497,3 +497,91 @@ class EmployeeTermination(models.Model):
 
     def __str__(self):
         return f"{self.employee.ci} | baja {self.termination_date} | {self.reason}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Aguinaldo (DS 110 — "Esfuerzo Bolivia")
+# ─────────────────────────────────────────────────────────────────────────────
+class AguinaldoPeriod(models.Model):
+    """
+    Registro de aguinaldo anual por empleado.
+
+    Tipos:
+      REGULAR — aguinaldo ordinario (1 sueldo/año, obligatorio).
+      DOBLE   — "Esfuerzo Bolivia": segundo aguinaldo cuando el PIB
+                 crece > 4.5% (DS 1802 y modificaciones).
+
+    Cálculo:
+      base         = sueldo_base al momento del cálculo (snapshot noviembre)
+      months_in_period = meses completos trabajados en el año
+                         (enero–noviembre si antiguedad >= 1 año;
+                          mes_ingreso–noviembre si ingresó durante el año)
+      amount       = (base / 12) × months_in_period
+      Requisito    : mínimo 90 días trabajados en el año.
+    """
+    class AguinaldoType(models.TextChoices):
+        REGULAR = "REGULAR", "Aguinaldo Regular (DS 110)"
+        DOBLE   = "DOBLE",   "Doble Aguinaldo — Esfuerzo Bolivia"
+
+    class Status(models.TextChoices):
+        DRAFT    = "DRAFT",    "Borrador"
+        APPROVED = "APPROVED", "Aprobado"
+        PAID     = "PAID",     "Pagado"
+
+    employee         = models.ForeignKey(
+        "Employee", on_delete=models.PROTECT, related_name="aguinaldos"
+    )
+    year             = models.PositiveSmallIntegerField(
+        help_text="Año fiscal al que corresponde el aguinaldo."
+    )
+    aguinaldo_type   = models.CharField(
+        max_length=10, choices=AguinaldoType.choices, default=AguinaldoType.REGULAR
+    )
+
+    # ── Snapshot de cálculo ───────────────────────────────────────────────────
+    hire_date_snapshot      = models.DateField(
+        help_text="Fecha de ingreso al momento del cálculo (para auditoría)."
+    )
+    base_salary_snapshot    = models.DecimalField(max_digits=10, decimal_places=2)
+    months_in_period        = models.DecimalField(
+        max_digits=4, decimal_places=2,
+        help_text="Meses proporcionales trabajados en el año (max 11 para regular)."
+    )
+    days_worked_in_year     = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Días efectivamente trabajados en el año (mínimo 90 para calificar)."
+    )
+    qualifies              = models.BooleanField(
+        default=True,
+        help_text="False si el empleado no cumple los 90 días mínimos."
+    )
+    amount                 = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00"),
+        help_text="Importe calculado: (sueldo/12) × meses_proporcionales."
+    )
+
+    # ── Estado y pago ─────────────────────────────────────────────────────────
+    status      = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.DRAFT
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        null=True, blank=True, related_name="approved_aguinaldos",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    paid_at     = models.DateTimeField(null=True, blank=True)
+    notes       = models.TextField(blank=True, default="")
+
+    created_at  = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Aguinaldo"
+        verbose_name_plural = "Aguinaldos"
+        unique_together = [("employee", "year", "aguinaldo_type")]
+        ordering = ["-year", "employee__last_name_paternal"]
+
+    def __str__(self):
+        return (
+            f"{self.employee.ci} | {self.aguinaldo_type} {self.year} "
+            f"| Bs.{self.amount} | {self.status}"
+        )
