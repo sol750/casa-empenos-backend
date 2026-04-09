@@ -731,3 +731,16 @@ class CashExpense(models.Model):
 
     def __str__(self):
         return f"[{self.category}] {self.description[:40]} – {self.cash_movement.amount} Bs."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO RRHH — importado desde models_hr.py para que Django lo descubra
+# ─────────────────────────────────────────────────────────────────────────────
+from core.models_hr import (  # noqa: E402
+    HRConfig,
+    Employee,
+    SalaryScale,
+    AttendanceRecord,
+    SalaryPeriod,
+    VacationPeriod,
+    EmployeeTermination,
+)

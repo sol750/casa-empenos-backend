@@ -56,6 +56,22 @@ from core.api.views.meta import RolesMetaView, BranchesMetaView
 from core.api.views.investor import InvestorCreateView
 from core.api.views.investor_account import InvestorAccountView
 
+# ── RRHH ──────────────────────────────────────────────────────────────────────
+from core.api.views.hr_employee import (
+    EmployeeListCreateView, EmployeeDetailView, EmployeeDocumentUploadView,
+)
+from core.api.views.hr_attendance import (
+    ClockInView, ClockOutView, AttendanceListView, EmployeeAttendanceView,
+)
+from core.api.views.hr_payroll import (
+    HRConfigView, PayrollGenerateView, PayrollListView,
+    PayrollMonthView, PayrollDetailView,
+)
+from core.api.views.hr_vacation import EmployeeVacationView, VacationDetailView
+from core.api.views.hr_termination import (
+    EmployeeTerminationView, EmployeeAuditLogView,
+)
+
 
 urlpatterns = [
 
@@ -121,7 +137,33 @@ urlpatterns = [
     path("meta/branches",                              BranchesMetaView.as_view()),
 
     # ── Inversores ────────────────────────────────────────────────────────────
-    path("investor",                                   InvestorCreateView.as_view()),   # legacy singular
-    path("investors",                                  InvestorCreateView.as_view()),   # alias plural GET/POST
+    path("investor",                                   InvestorCreateView.as_view()),
+    path("investors",                                  InvestorCreateView.as_view()),
     path("investors/<uuid:investor_id>/account",       InvestorAccountView.as_view()),
+
+    # ── RRHH — Configuración ──────────────────────────────────────────────────
+    path("hr/config",                                  HRConfigView.as_view()),
+
+    # ── RRHH — Empleados ──────────────────────────────────────────────────────
+    path("hr/employees",                               EmployeeListCreateView.as_view()),
+    path("hr/employees/<uuid:employee_id>",            EmployeeDetailView.as_view()),
+    path("hr/employees/<uuid:employee_id>/documents",  EmployeeDocumentUploadView.as_view()),
+    path("hr/employees/<uuid:employee_id>/attendance", EmployeeAttendanceView.as_view()),
+    path("hr/employees/<uuid:employee_id>/vacations",  EmployeeVacationView.as_view()),
+    path("hr/employees/<uuid:employee_id>/terminate",  EmployeeTerminationView.as_view()),
+    path("hr/employees/<uuid:employee_id>/audit-log",  EmployeeAuditLogView.as_view()),
+
+    # ── RRHH — Asistencia ─────────────────────────────────────────────────────
+    path("hr/attendance/clock-in",                     ClockInView.as_view()),
+    path("hr/attendance/clock-out",                    ClockOutView.as_view()),
+    path("hr/attendance",                              AttendanceListView.as_view()),
+
+    # ── RRHH — Planilla ───────────────────────────────────────────────────────
+    path("hr/payroll/generate",                        PayrollGenerateView.as_view()),
+    path("hr/payroll",                                 PayrollListView.as_view()),
+    path("hr/payroll/<int:year>/<int:month>",          PayrollMonthView.as_view()),
+    path("hr/payroll/<int:period_id>",                 PayrollDetailView.as_view()),
+
+    # ── RRHH — Vacaciones ─────────────────────────────────────────────────────
+    path("hr/vacations/<int:vacation_id>",             VacationDetailView.as_view()),
 ]
