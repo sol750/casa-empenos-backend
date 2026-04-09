@@ -151,6 +151,25 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# ─────────────────────────────────────────────────────────────────────────────
+# WhatsApp Business API (Meta Cloud API)
+# Docs: https://developers.facebook.com/docs/whatsapp/cloud-api
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Credenciales — configurar en .env para no subir al repositorio
+WHATSAPP_TOKEN       = env("WHATSAPP_TOKEN",       default="")
+WHATSAPP_PHONE_ID    = env("WHATSAPP_PHONE_ID",    default="")
+WHATSAPP_API_VERSION = env("WHATSAPP_API_VERSION", default="v20.0")
+
+# Horario de oficina (solo se envían mensajes dentro de este rango)
+WHATSAPP_OFFICE_HOURS_START = env.int("WHATSAPP_OFFICE_HOURS_START", default=8)
+WHATSAPP_OFFICE_HOURS_END   = env.int("WHATSAPP_OFFICE_HOURS_END",   default=18)
+WHATSAPP_SEND_ON_WEEKENDS   = env.bool("WHATSAPP_SEND_ON_WEEKENDS",  default=False)
+
+# Delays humanizados entre mensajes consecutivos (segundos)
+WHATSAPP_DELAY_MIN = env.int("WHATSAPP_DELAY_MIN", default=30)
+WHATSAPP_DELAY_MAX = env.int("WHATSAPP_DELAY_MAX", default=90)
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",

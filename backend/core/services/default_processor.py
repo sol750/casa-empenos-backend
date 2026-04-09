@@ -99,17 +99,21 @@ def mark_defaulted_contracts(dry_run: bool = False) -> dict:
 
                 # 3) WhatsApp OVERDUE_NOTICE
                 if contract.customer and contract.customer.phone:
+                    from django.utils import timezone as tz
+                    body = (
+                        f"Hola {contract.customer.first_name}, tu contrato "
+                        f"#{contract.contract_number} tiene {days_overdue} día(s) de mora "
+                        f"(vencía {contract.due_date.strftime('%d/%m/%Y')}). "
+                        f"Capital: Bs.{contract.principal_amount:,}. "
+                        f"Por favor acércate a regularizar. ¡Gracias!"
+                    )
                     WhatsAppMessage.objects.create(
-                        customer=contract.customer,
-                        message_type=WhatsAppMessage.MessageType.OVERDUE_NOTICE,
-                        contract_ref=contract.contract_number,
-                        phone_number=contract.customer.phone,
-                        payload={
-                            "contract_number": contract.contract_number,
-                            "days_overdue":    days_overdue,
-                            "due_date":        str(contract.due_date),
-                            "principal":       str(contract.principal_amount),
-                        },
+                        customer      = contract.customer,
+                        contract      = contract,
+                        event_type    = WhatsAppMessage.EventType.OVERDUE_NOTICE,
+                        phone_to      = contract.customer.phone,
+                        message_body  = body,
+                        scheduled_for = tz.now(),
                     )
                     row["whatsapp_queued"] = True
 
