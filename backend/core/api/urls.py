@@ -108,6 +108,13 @@ from core.api.views.mvi import (
     MVIOverrideListView,
     MVIOverrideAuthorizeView,
 )
+from core.api.views.whatsapp_mvi_notify import (
+    MVIOverridePendingAlertView,
+    MVIOverrideWhatsAppAlertView,
+)
+from core.api.views.reports_mvi import MVIOverrideReportView, MVIStatsReportView
+from core.api.views.dashboard_owner import OwnerDashboardView
+from core.api.views.reports_vitrina import VitrinaReportView
 
 
 urlpatterns = [
@@ -226,12 +233,24 @@ urlpatterns = [
     path("hr/aguinaldo/detail/<int:aguinaldo_id>",     AguinaldoDetailView.as_view()),
 
     # ── MVI ───────────────────────────────────────────────────────────────────
-    path("mvi/suggest",                                MVISuggestView.as_view()),
-    path("mvi/config",                                 MVIConfigView.as_view()),
-    path("mvi/overrides",                              MVIOverrideListView.as_view()),
-    path("mvi/overrides/create",                       MVIOverrideCreateView.as_view()),
-    path("mvi/overrides/<uuid:override_id>/authorize", MVIOverrideAuthorizeView.as_view(), kwargs={"action": "authorize"}),
-    path("mvi/overrides/<uuid:override_id>/deny",      MVIOverrideAuthorizeView.as_view(), kwargs={"action": "deny"}),
+    path("mvi/suggest",                                    MVISuggestView.as_view()),
+    path("mvi/config",                                     MVIConfigView.as_view()),
+    path("mvi/overrides",                                  MVIOverrideListView.as_view()),
+    path("mvi/overrides/create",                           MVIOverrideCreateView.as_view()),
+    path("mvi/overrides/pending-alert",                    MVIOverridePendingAlertView.as_view()),
+    path("mvi/overrides/whatsapp-alert",                   MVIOverrideWhatsAppAlertView.as_view()),
+    path("mvi/overrides/<uuid:override_id>/authorize",     MVIOverrideAuthorizeView.as_view(), kwargs={"action": "authorize"}),
+    path("mvi/overrides/<uuid:override_id>/deny",          MVIOverrideAuthorizeView.as_view(), kwargs={"action": "deny"}),
+
+    # ── Dashboard dueño ──────────────────────────────────────────────────────
+    path("dashboard/owner",                            OwnerDashboardView.as_view()),
+
+    # ── Reportes MVI ─────────────────────────────────────────────────────────
+    path("reports/mvi/overrides",                      MVIOverrideReportView.as_view()),
+    path("reports/mvi/stats",                          MVIStatsReportView.as_view()),
+
+    # ── Reporte vitrina (contratos en mora/venta) ─────────────────────────────
+    path("reports/vitrina",                            VitrinaReportView.as_view()),
 
     # ── Reportes RRHH ────────────────────────────────────────────────────────
     path("reports/hr/aguinaldo/<int:year>",            AguinaldoReportView.as_view()),
