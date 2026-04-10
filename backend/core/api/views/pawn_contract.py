@@ -87,7 +87,8 @@ class PawnContractCreateView(APIView):
             "start_date", timezone.now().date()
         )
 
-        due_date = _calculate_due_date(start_date)
+        # Respetar due_date del payload si fue enviado, sino calcular 1 mes
+        due_date = serializer.validated_data.get("due_date") or _calculate_due_date(start_date)
 
         # Tasa: política base + descuento automático si el cliente es ORO
         interest_rate = get_applicable_rate(customer, principal)
@@ -170,6 +171,8 @@ class PawnContractCreateView(APIView):
                 "status":                contract.status,
                 "principal_amount":      str(contract.principal_amount),
                 "interest_rate_monthly": str(contract.interest_rate_monthly),
+                "interest_mode":         contract.interest_mode,
+                "promo_note":            contract.promo_note,
                 "start_date":            str(contract.start_date),
                 "due_date":              str(contract.due_date),
                 # Info del cliente vinculado

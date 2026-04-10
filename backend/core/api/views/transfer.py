@@ -8,14 +8,59 @@ from rest_framework import status
 
 from core.models import Transfer, CashRegister, CashSession, CashMovement
 from core.api.serializers.transfer import TransferCreateSerializer
-from core.api.security import require_roles
+from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
 
 
 # ==============================
-# CREAR TRANSFERENCIA (OWNER)
+# LISTAR / CREAR TRANSFERENCIA
 # ==============================
 class TransferCreateView(APIView):
     permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """Lista transferencias. Filtros: ?status=PENDING|COMPLETED|REJECTED"""
+        require_roles(request.user, {"CAJERO", "SUPERVISOR", "OWNER_ADMIN"})
+
+        qs = Transfer.objects.select_related(
+            "from_cash_register__branch",
+            "to_cash_register__branch",
+            "created_by",
+            "accepted_by",
+        ).order_by("-created_at")
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            qs = qs.filter(status=status_filter.upper())
+
+        # Cajeros solo ven transferencias hacia sus cajas
+        if not is_owner_admin(request.user):
+            allowed_codes = get_user_branch_codes(request.user)
+            qs = qs.filter(
+                to_cash_register__branch__code__in=allowed_codes
+            ) | qs.filter(
+                from_cash_register__branch__code__in=allowed_codes
+            )
+            qs = qs.distinct()
+
+        transfers = [
+            {
+                "transfer_id":            str(t.public_id),
+                "from_cash_register_id":  str(t.from_cash_register.public_id),
+                "from_branch":            t.from_cash_register.branch.code if t.from_cash_register.branch else None,
+                "to_cash_register_id":    str(t.to_cash_register.public_id),
+                "to_branch":              t.to_cash_register.branch.code if t.to_cash_register.branch else None,
+                "amount":                 str(t.amount),
+                "status":                 t.status,
+                "note":                   t.note,
+                "created_by":             t.created_by.username if t.created_by else None,
+                "created_at":             t.created_at,
+                "accepted_by":            t.accepted_by.username if t.accepted_by else None,
+                "accepted_at":            t.accepted_at,
+            }
+            for t in qs[:200]
+        ]
+
+        return Response({"count": len(transfers), "results": transfers})
 
     def post(self, request):
         serializer = TransferCreateSerializer(data=request.data)

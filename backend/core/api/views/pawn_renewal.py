@@ -82,7 +82,7 @@ class PawnRenewalCreateView(APIView):
                 to_date=renew_date,
             )
 
-            amount_charged = (interest_due + fee_amount).quantize(Decimal("0.01"))
+            amount_charged = (interest_due + Decimal(str(fee_amount))).quantize(Decimal("0.01"))
 
             PawnRenewal.objects.create(
                 contract=contract,

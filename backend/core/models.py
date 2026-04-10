@@ -233,9 +233,12 @@ class PawnContract(models.Model):
     Auditoría: guarda tasa/condiciones al momento de crear.
     """
     class Status(models.TextChoices):
-        ACTIVE = "ACTIVE", "Activo"
-        CLOSED = "CLOSED", "Cerrado"
-        DEFAULTED = "DEFAULTED", "En mora"
+        ACTIVE     = "ACTIVE",     "Activo"
+        CLOSED     = "CLOSED",     "Cerrado"
+        DEFAULTED  = "DEFAULTED",  "En mora"
+        CANCELLED  = "CANCELLED",  "Cancelado"
+        EN_VENTA   = "EN_VENTA",   "En Vitrina"
+        SOLD       = "SOLD",       "Vendido"
 
     public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 

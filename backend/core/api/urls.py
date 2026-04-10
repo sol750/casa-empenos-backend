@@ -33,6 +33,7 @@ from core.api.views.reports_default_summary import DefaultSummaryReportView
 # ── Mora ──────────────────────────────────────────────────────────────────────
 from core.api.views.pawn_contract_defaulted import PawnContractDefaultedView
 from core.api.views.process_defaults_api import ProcessDefaultsView
+from core.api.views.pawn_contract_cancel import PawnContractCancelView
 
 # ── Clientes / KYC / WhatsApp ─────────────────────────────────────────────────
 from core.api.views.customer import (
@@ -112,6 +113,7 @@ urlpatterns = [
     path("pawn-contracts/list",                        PawnContractListView.as_view()),
     path("pawn-contracts/payments",                    PawnPaymentCreateView.as_view()),
     path("pawn-contracts/renew",                       PawnRenewalCreateView.as_view()),
+    path("pawn-contracts/cancel",                        PawnContractCancelView.as_view()),
     path("pawn-contracts/defaulted",                   PawnContractDefaultedView.as_view()),
     path("pawn-contracts/process-defaults",            ProcessDefaultsView.as_view()),
     path("pawn-contracts/<uuid:contract_id>",          PawnContractDetailView.as_view()),

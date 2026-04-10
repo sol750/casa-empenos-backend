@@ -109,6 +109,8 @@ class PawnContractDetailView(APIView):
                 "principal_paid_total":  str(principal_paid_total),
                 "outstanding_principal": str(outstanding_principal),
                 "interest_rate_monthly": str(contract.interest_rate_monthly),
+                "interest_mode":         contract.interest_mode,
+                "promo_note":            contract.promo_note,
                 "start_date":            str(contract.start_date),
                 "due_date":              str(contract.due_date),
                 "interest_accrued_until": str(from_date),
