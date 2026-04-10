@@ -370,8 +370,16 @@ class PawnItem(models.Model):
     attributes = models.JSONField(default=dict, blank=True)
 
     # 📦 Estado físico
-    has_box = models.BooleanField(default=False)
-    has_charger = models.BooleanField(default=False)
+    class Condition(models.TextChoices):
+        EXCELLENT = "EXCELLENT", "Excelente"
+        GOOD      = "GOOD",      "Bueno"
+        WORN      = "WORN",      "Desgastado"
+        DAMAGED   = "DAMAGED",   "Dañado"
+
+    has_box      = models.BooleanField(default=False)
+    has_charger  = models.BooleanField(default=False)
+    condition    = models.CharField(max_length=20, choices=Condition.choices, default=Condition.GOOD,
+                                    help_text="Estado del artículo: ajusta la sugerencia MVI")
     observations = models.TextField(blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -784,4 +792,12 @@ from core.models_hr import (  # noqa: E402
 from core.models_inventory import (  # noqa: E402
     DirectPurchase,
     DirectPurchasePhoto,
+)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO MVI — importado desde models_mvi.py
+# ─────────────────────────────────────────────────────────────────────────────
+from core.models_mvi import (  # noqa: E402
+    MVIConfig,
+    AppraisalOverride,
 )

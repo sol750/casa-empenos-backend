@@ -12,6 +12,7 @@ from core.api.serializers.pawn_payment import PawnPaymentCreateSerializer
 from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
 from core.services.interest_calc import prorated_interest
 from core.services.scoring_engine import apply_contract_closure_score
+from core.services.contract_state import get_contract_state, ContractState
 
 
 class PawnPaymentCreateView(APIView):
@@ -72,11 +73,16 @@ class PawnPaymentCreateView(APIView):
 
             from_date = contract.interest_accrued_until or contract.start_date
 
+            # Período de gracia (días 0-5 post vencimiento): congelar interés al due_date
+            # Evita cobrar días extra que el cliente no debe (beneficio VIP/recurrente).
+            state = get_contract_state(contract, payment_date)
+            interest_to = contract.due_date if state == ContractState.VENCIDO else payment_date
+
             interest_due = prorated_interest(
                 principal=outstanding_principal,
                 monthly_rate_percent=contract.interest_rate_monthly,
                 from_date=from_date,
-                to_date=payment_date,
+                to_date=interest_to,
             )
 
             interest_paid = min(payment_amount, interest_due)

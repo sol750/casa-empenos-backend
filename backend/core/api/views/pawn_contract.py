@@ -9,11 +9,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.models import CashSession, CashMovement, PawnContract, PawnItem, Investor, InvestorAccount, InvestorMovement, Customer
+from core.models_mvi import AppraisalOverride
 from core.models_security import UserRole
 from core.api.serializers.pawn_contract import PawnContractCreateSerializer
 from core.services.contract_numbering import next_pawn_contract_number
 from core.services.credit_line_calc import get_applicable_rate
 from core.services.scoring_engine import increment_contract_count
+from core.services.mvi_engine import get_mvi_suggestion, validate_principal_against_mvi
 
 
 def _calculate_due_date(start_date):
@@ -56,6 +58,74 @@ class PawnContractCreateView(APIView):
             )
 
         principal = serializer.validated_data["principal_amount"]
+
+        # ── MVI: validar monto antes de crear el contrato ─────────────────────
+        items_data_pre = serializer.validated_data.get("items", [])
+        if items_data_pre:
+            first_item = items_data_pre[0]
+            item_category   = first_item.get("category", "OTHER")
+            item_description = first_item.get("description", "")
+            item_condition  = first_item.get("condition", "GOOD")
+
+            # Atributos de joyería (karat, weight_grams) si vienen en el item
+            item_attrs = first_item.get("attributes", {})
+
+            # Categoría del cliente para bonus VIP
+            customer_ci_pre = serializer.validated_data.get("customer_ci", "").strip().upper()
+            customer_cat_pre = None
+            if customer_ci_pre:
+                _cust_pre = Customer.objects.filter(ci=customer_ci_pre).first()
+                if _cust_pre:
+                    customer_cat_pre = _cust_pre.category
+
+            mvi_result  = get_mvi_suggestion(
+                category=item_category,
+                description=item_description,
+                condition=item_condition,
+                attributes=item_attrs,
+                customer_category=customer_cat_pre,
+            )
+            mvi_check = validate_principal_against_mvi(principal, mvi_result)
+
+            if mvi_check["status"] == "HARD_BLOCK":
+                # Verificar si viene con override aprobado
+                override_id = request.data.get("mvi_override_id")
+                if override_id:
+                    try:
+                        override = AppraisalOverride.objects.get(
+                            public_id=override_id,
+                            status=AppraisalOverride.Status.APPROVED,
+                            contract__isnull=True,  # aún no vinculado a contrato
+                        )
+                    except AppraisalOverride.DoesNotExist:
+                        return Response(
+                            {
+                                "detail": "El override_id no es válido, no está aprobado o ya fue utilizado.",
+                                "mvi_status": "HARD_BLOCK",
+                            },
+                            status=status.HTTP_409_CONFLICT,
+                        )
+                else:
+                    return Response(
+                        {
+                            "detail": mvi_check["message"],
+                            "mvi_status":    "HARD_BLOCK",
+                            "recommended":   mvi_check.get("recommended"),
+                            "hard_max":      mvi_check.get("hard_max"),
+                            "action_required": (
+                                "Crea una solicitud en POST /api/mvi/overrides y espera la "
+                                "autorización del dueño. Luego reenvía este request con el campo "
+                                "'mvi_override_id'."
+                            ),
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+            # SOFT_WARNING: se deja pasar pero se anota en mvi_alert
+            mvi_alert = mvi_check if mvi_check["status"] == "SOFT_WARNING" else None
+        else:
+            mvi_result  = None
+            mvi_alert   = None
+            override_id = None
 
         # ── Vincular cliente por CI (si existe en la BD) ──────────────────────
         customer = None
@@ -149,8 +219,18 @@ class PawnContractCreateView(APIView):
                     attributes=item.get("attributes", {}),
                     has_box=item.get("has_box", False),
                     has_charger=item.get("has_charger", False),
-                    observations=item.get("condition_notes", ""),  # 🔥 CLAVE
+                    observations=item.get("condition_notes", ""),
+                    condition=item.get("condition", "GOOD"),
                 )
+
+            # 🔹 Vincular override MVI aprobado al contrato (si aplica)
+            if items_data_pre and override_id:
+                try:
+                    AppraisalOverride.objects.filter(
+                        public_id=override_id
+                    ).update(contract=contract)
+                except Exception:
+                    pass
 
             # 🔹 Movimiento de caja
             # Todos los amounts se guardan POSITIVOS; la dirección la da movement_type (_IN/_OUT)
@@ -164,23 +244,31 @@ class PawnContractCreateView(APIView):
                 note=f"Desembolso contrato {contract.contract_number}",
             )
 
-        return Response(
-            {
-                "pawn_contract_id":      str(contract.public_id),
-                "contract_number":       contract.contract_number,
-                "status":                contract.status,
-                "principal_amount":      str(contract.principal_amount),
-                "interest_rate_monthly": str(contract.interest_rate_monthly),
-                "interest_mode":         contract.interest_mode,
-                "promo_note":            contract.promo_note,
-                "start_date":            str(contract.start_date),
-                "due_date":              str(contract.due_date),
-                # Info del cliente vinculado
-                "customer_linked":       customer is not None,
-                "customer_category":     customer.category if customer else None,
-                "oro_discount_applied":  (
-                    customer is not None and customer.category == "ORO"
-                ),
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        response_data = {
+            "pawn_contract_id":      str(contract.public_id),
+            "contract_number":       contract.contract_number,
+            "status":                contract.status,
+            "principal_amount":      str(contract.principal_amount),
+            "interest_rate_monthly": str(contract.interest_rate_monthly),
+            "interest_mode":         contract.interest_mode,
+            "promo_note":            contract.promo_note,
+            "start_date":            str(contract.start_date),
+            "due_date":              str(contract.due_date),
+            # Info del cliente vinculado
+            "customer_linked":       customer is not None,
+            "customer_category":     customer.category if customer else None,
+            "oro_discount_applied":  (
+                customer is not None and customer.category == "ORO"
+            ),
+        }
+
+        # Adjuntar advertencia MVI si hubo soft warning
+        if mvi_alert:
+            response_data["mvi_warning"] = {
+                "status":      mvi_alert["status"],
+                "message":     mvi_alert["message"],
+                "recommended": mvi_alert.get("recommended"),
+                "max_allowed": mvi_alert.get("max_allowed_no_block"),
+            }
+
+        return Response(response_data, status=status.HTTP_201_CREATED)

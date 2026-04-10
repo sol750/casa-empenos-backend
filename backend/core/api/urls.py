@@ -100,6 +100,15 @@ from core.api.views.hr_termination import (
     EmployeeTerminationView, EmployeeAuditLogView,
 )
 
+# ── MVI (Motor de Valoración Inteligente) ─────────────────────────────────────
+from core.api.views.mvi import (
+    MVISuggestView,
+    MVIConfigView,
+    MVIOverrideCreateView,
+    MVIOverrideListView,
+    MVIOverrideAuthorizeView,
+)
+
 
 urlpatterns = [
 
@@ -215,6 +224,14 @@ urlpatterns = [
     path("hr/aguinaldo/<int:year>/preview",            AguinaldoPreviewView.as_view()),
     path("hr/aguinaldo/<int:year>",                    AguinaldoYearView.as_view()),
     path("hr/aguinaldo/detail/<int:aguinaldo_id>",     AguinaldoDetailView.as_view()),
+
+    # ── MVI ───────────────────────────────────────────────────────────────────
+    path("mvi/suggest",                                MVISuggestView.as_view()),
+    path("mvi/config",                                 MVIConfigView.as_view()),
+    path("mvi/overrides",                              MVIOverrideListView.as_view()),
+    path("mvi/overrides/create",                       MVIOverrideCreateView.as_view()),
+    path("mvi/overrides/<uuid:override_id>/authorize", MVIOverrideAuthorizeView.as_view(), kwargs={"action": "authorize"}),
+    path("mvi/overrides/<uuid:override_id>/deny",      MVIOverrideAuthorizeView.as_view(), kwargs={"action": "deny"}),
 
     # ── Reportes RRHH ────────────────────────────────────────────────────────
     path("reports/hr/aguinaldo/<int:year>",            AguinaldoReportView.as_view()),

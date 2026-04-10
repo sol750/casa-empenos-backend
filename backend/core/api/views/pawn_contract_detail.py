@@ -8,6 +8,7 @@ from rest_framework import status
 
 from core.models import PawnContract
 from core.services.interest_calc import prorated_interest
+from core.services.contract_state import get_contract_state, ContractState, calculate_recovery_amount
 from core.api.security import require_roles, require_branch_access
 
 
@@ -52,12 +53,13 @@ class PawnContractDetailView(APIView):
 
         today = timezone.now().date()
         from_date = contract.interest_accrued_until or contract.start_date
-        interest_accrued_now = prorated_interest(
-            principal=outstanding_principal if outstanding_principal > 0 else Decimal("0.00"),
-            monthly_rate_percent=contract.interest_rate_monthly,
-            from_date=from_date,
-            to_date=today,
-        )
+
+        # Usar la máquina de estados para calcular el interés correctamente:
+        # - Período de gracia (VENCIDO): interés congelado al due_date
+        # - ACTIVO / EN_MORA: interés prorrateado hasta hoy
+        recovery = calculate_recovery_amount(contract, today)
+        interest_accrued_now = recovery["interest_due"]
+        contract_state       = recovery["state"]
 
         # ── Pagos: nombres de campo ajustados a lo que espera el frontend ───
         payments = [
@@ -102,6 +104,10 @@ class PawnContractDetailView(APIView):
                 "pawn_contract_id":      str(contract.public_id),
                 "contract_number":       contract.contract_number,
                 "status":                contract.status,
+                "state":                 contract_state,
+                "can_amortize":          recovery["can_amortize"],
+                "can_recover":           recovery["can_recover"],
+                "total_to_recover":      str(recovery["total_to_recover"]),
                 "branch_code":           contract.branch.code,
                 "customer_full_name":    contract.customer_full_name,
                 "customer_ci":           contract.customer_ci,
