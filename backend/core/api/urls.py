@@ -10,6 +10,11 @@ from core.api.views.cash_session_report import CashSessionClosingReportPDFView
 from core.api.views.cash_summary import CashSessionSummaryView
 from core.api.views.cash import CashSessionBalanceView
 from core.api.views.cash_register import CashRegisterListView
+from core.api.views.cash_capital import (
+    CashCapitalView,
+    CashCapitalWithdrawView,
+    CashCapitalHistoryView,
+)
 from core.api.views.cash_register_balance import CashRegisterBalancesView
 from core.api.views.cash_register_alerts import CashRegisterAlertsView
 from core.api.views.cash_denomination import CashDenominationView
@@ -124,6 +129,9 @@ urlpatterns = [
 
     # ── Cajas ─────────────────────────────────────────────────────────────────
     path("cash-registers",                             CashRegisterListView.as_view()),
+    path("cash-registers/<uuid:register_id>/capital",              CashCapitalView.as_view()),
+    path("cash-registers/<uuid:register_id>/capital/withdraw",     CashCapitalWithdrawView.as_view()),
+    path("cash-registers/<uuid:register_id>/capital/history",      CashCapitalHistoryView.as_view()),
     path("cash-registers/balances",                    CashRegisterBalancesView.as_view()),
     path("cash-registers/balance",                     CashRegisterBalancesView.as_view()),  # alias singular
     path("cash-registers/alerts",                      CashRegisterAlertsView.as_view()),

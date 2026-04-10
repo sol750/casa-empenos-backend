@@ -190,14 +190,16 @@ class CashMovement(models.Model):
     Base para auditoría y cálculo de expected.
     """
     class MovementType(models.TextChoices):
-        # ── Existentes ──────────────────────────────────────────────
+        # ── Capital del dueño ────────────────────────────────────────
+        CAPITAL_IN     = "CAPITAL_IN",     "Inyección de Capital"
+        CAPITAL_OUT    = "CAPITAL_OUT",    "Retiro de Capital / Utilidad"
+        # ── Operaciones de caja ──────────────────────────────────────
         TRANSFER_IN    = "TRANSFER_IN",    "Transferencia Entrante"
         TRANSFER_OUT   = "TRANSFER_OUT",   "Transferencia Saliente"
         ADJUSTMENT_IN  = "ADJUSTMENT_IN",  "Ajuste Sobrante"
         ADJUSTMENT_OUT = "ADJUSTMENT_OUT", "Ajuste Faltante"
         LOAN_OUT       = "LOAN_OUT",       "CN – Desembolso de Contrato"
         PAYMENT_IN     = "PAYMENT_IN",     "CC/UC – Cobro de Contrato"
-        # ── Nuevos ──────────────────────────────────────────────────
         PURCHASE_OUT   = "PURCHASE_OUT",   "CD – Compra Directa"
         EXPENSE_OUT    = "EXPENSE_OUT",    "G – Gasto Operativo"
         VAULT_IN       = "VAULT_IN",       "Ingreso a Bóveda"
