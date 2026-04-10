@@ -35,6 +35,25 @@ from core.api.views.pawn_contract_defaulted import PawnContractDefaultedView
 from core.api.views.process_defaults_api import ProcessDefaultsView
 from core.api.views.pawn_contract_cancel import PawnContractCancelView
 
+# ── Amortización ──────────────────────────────────────────────────────────────
+from core.api.views.pawn_amortization import (
+    PawnContractStateView,
+    PawnAmortizationPreviewView,
+    PawnAmortizationCreateView,
+)
+
+# ── Inventario (Compra Directa + Vitrina) ─────────────────────────────────────
+from core.api.views.inventory import (
+    InventoryListView,
+    InventoryDetailView,
+    DirectPurchaseCreateView,
+    InventoryPhotoUploadView,
+    InventoryPriceView,
+    InventoryQRView,
+    InventorySellView,
+    InventoryCancelView,
+)
+
 # ── Clientes / KYC / WhatsApp ─────────────────────────────────────────────────
 from core.api.views.customer import (
     CustomerListCreateView,
@@ -116,7 +135,20 @@ urlpatterns = [
     path("pawn-contracts/cancel",                        PawnContractCancelView.as_view()),
     path("pawn-contracts/defaulted",                   PawnContractDefaultedView.as_view()),
     path("pawn-contracts/process-defaults",            ProcessDefaultsView.as_view()),
-    path("pawn-contracts/<uuid:contract_id>",          PawnContractDetailView.as_view()),
+    path("pawn-contracts/<uuid:contract_id>",                           PawnContractDetailView.as_view()),
+    path("pawn-contracts/<uuid:contract_id>/state",                    PawnContractStateView.as_view()),
+    path("pawn-contracts/<uuid:contract_id>/amortize/preview",         PawnAmortizationPreviewView.as_view()),
+    path("pawn-contracts/<uuid:contract_id>/amortize",                 PawnAmortizationCreateView.as_view()),
+
+    # ── Inventario ────────────────────────────────────────────────────────────
+    path("inventory",                                                   InventoryListView.as_view()),
+    path("inventory/direct-purchase",                                   DirectPurchaseCreateView.as_view()),
+    path("inventory/<uuid:purchase_id>",                               InventoryDetailView.as_view()),
+    path("inventory/<uuid:purchase_id>/photos",                        InventoryPhotoUploadView.as_view()),
+    path("inventory/<uuid:purchase_id>/price",                         InventoryPriceView.as_view()),
+    path("inventory/<uuid:purchase_id>/qr",                            InventoryQRView.as_view()),
+    path("inventory/<uuid:purchase_id>/sell",                          InventorySellView.as_view()),
+    path("inventory/<uuid:purchase_id>/cancel",                        InventoryCancelView.as_view()),
 
     # ── Reportes ──────────────────────────────────────────────────────────────
     path("reports/daily-summary",                      DailySummaryReportView.as_view()),

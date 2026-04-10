@@ -380,6 +380,34 @@ class PawnItem(models.Model):
         return f"{self.category} - {self.contract.contract_number}"
 
 
+class PawnAmortization(models.Model):
+    """
+    Adenda de amortización: el cliente paga interés + abona capital.
+    Solo se crea cuando el contrato está en estado ACTIVO (today < due_date).
+    """
+    public_id      = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    contract       = models.ForeignKey(PawnContract, on_delete=models.PROTECT, related_name="amortizations")
+    cash_session   = models.ForeignKey(CashSession,   on_delete=models.PROTECT, related_name="amortizations")
+    performed_by   = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="amortizations")
+    performed_at   = models.DateTimeField(auto_now_add=True)
+
+    outstanding_before  = models.DecimalField(max_digits=12, decimal_places=2)  # capital antes
+    capital_paid        = models.DecimalField(max_digits=12, decimal_places=2)  # abono a capital
+    interest_paid       = models.DecimalField(max_digits=12, decimal_places=2)  # UC cobrada
+
+    previous_due_date   = models.DateField()
+    new_due_date        = models.DateField()
+
+    note = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        verbose_name = "Amortización"
+        verbose_name_plural = "Amortizaciones"
+
+    def __str__(self):
+        return f"Amort {self.contract.contract_number} -{self.capital_paid}"
+
+
 class Transfer(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pendiente"
@@ -747,4 +775,13 @@ from core.models_hr import (  # noqa: E402
     VacationPeriod,
     EmployeeTermination,
     AguinaldoPeriod,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MÓDULO INVENTARIO — importado desde models_inventory.py
+# ─────────────────────────────────────────────────────────────────────────────
+from core.models_inventory import (  # noqa: E402
+    DirectPurchase,
+    DirectPurchasePhoto,
 )
