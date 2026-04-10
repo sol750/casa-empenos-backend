@@ -19,7 +19,7 @@ class PawnContractListView(APIView):
         except Exception as e:
             return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = PawnContract.objects.select_related("branch").order_by("-created_at")
+        qs = PawnContract.objects.select_related("branch", "customer").order_by("-created_at")
 
         # 2) Restricción por sucursal si no es dueño
         user_allowed_branch_codes = set()

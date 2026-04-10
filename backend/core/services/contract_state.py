@@ -2,10 +2,11 @@
 Máquina de estados de contratos de empeño.
 Calcula el estado en tiempo real basándose en la fecha actual y el historial.
 """
-from datetime import date
 from decimal import Decimal
 
-GRACE_PERIOD_DAYS = 5    # Días 0-5 tras vencimiento: mismo monto, sin amortizar
+from django.utils import timezone
+
+GRACE_PERIOD_DAYS = 5    # Fallback si Branch no tiene grace_period_days configurado
 ELIGIBLE_SALE_DAYS = 90  # 3 meses sin actividad → alerta ELEGIBLE_VENTA
 
 
@@ -32,7 +33,6 @@ def get_last_activity_date(contract):
     if last_renewal:
         dates.append(last_renewal.renewed_at.date())
 
-    # Amortizaciones (si existe la tabla)
     try:
         last_amort = contract.amortizations.order_by("-performed_at").first()
         if last_amort:
@@ -45,7 +45,7 @@ def get_last_activity_date(contract):
 
 def get_contract_state(contract, today=None) -> str:
     if today is None:
-        today = date.today()
+        today = timezone.now().date()  # Fix #2: hora boliviana correcta
 
     s = contract.status
 
@@ -57,17 +57,26 @@ def get_contract_state(contract, today=None) -> str:
         return ContractState.EN_VENTA
     if s == "CANCELLED":
         return ContractState.CANCELADO
+    if s == "DEFAULTED":
+        # Fix #8: DEFAULTED es EN_MORA — no tratar como ACTIVO
+        days_overdue = (today - contract.due_date).days
+        last_activity = get_last_activity_date(contract)
+        reference = last_activity if last_activity else contract.start_date
+        if (today - reference).days >= ELIGIBLE_SALE_DAYS:
+            return ContractState.ELEGIBLE_VENTA
+        return ContractState.EN_MORA
 
-    # ACTIVE / DEFAULTED (legacy) → calcular desde fechas
+    # ACTIVE → calcular desde fechas
     days_overdue = (today - contract.due_date).days
 
     if days_overdue < 0:
         return ContractState.ACTIVO
 
-    if days_overdue <= GRACE_PERIOD_DAYS:
+    # Fix #3: respetar grace_period_days de la sucursal
+    grace = getattr(contract.branch, "grace_period_days", GRACE_PERIOD_DAYS)
+    if days_overdue <= grace:
         return ContractState.VENCIDO
 
-    # Más de 5 días → verificar ELEGIBLE_VENTA (90 días sin actividad)
     last_activity = get_last_activity_date(contract)
     reference = last_activity if last_activity else contract.start_date
     if (today - reference).days >= ELIGIBLE_SALE_DAYS:
@@ -92,7 +101,7 @@ def calculate_recovery_amount(contract, today=None) -> dict:
     from core.services.interest_calc import prorated_interest
 
     if today is None:
-        today = date.today()
+        today = timezone.now().date()
 
     state = get_contract_state(contract, today)
     outstanding = calculate_outstanding_principal(contract)

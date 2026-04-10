@@ -132,12 +132,14 @@ def search_sold_items(description: str, category: str) -> dict:
 # 3. Valor intrínseco de joyería
 # ─────────────────────────────────────────────────────────────────────────────
 def calculate_jewelry_value(karat: int, weight_grams: Decimal,
-                             metal: str = "GOLD") -> Optional[Decimal]:
+                             metal: str = "GOLD",
+                             config=None) -> Optional[Decimal]:
     """
     Calcula el valor de fundición de una joya.
     metal: GOLD | SILVER
     """
-    config = MVIConfig.get()
+    if config is None:
+        config = MVIConfig.get()
     if metal == "SILVER":
         return _q(config.silver_price_gram_bs * weight_grams)
 
@@ -152,9 +154,10 @@ def calculate_jewelry_value(karat: int, weight_grams: Decimal,
 # 4. Depreciación para tecnología
 # ─────────────────────────────────────────────────────────────────────────────
 def apply_depreciation(base_price: Decimal, category: str,
-                        months_elapsed: int) -> Decimal:
+                        months_elapsed: int, config=None) -> Decimal:
     """Aplica depreciación compuesta: base × (1 - rate)^months."""
-    config = MVIConfig.get()
+    if config is None:
+        config = MVIConfig.get()
     attr   = CATEGORY_DEPRECIATION_ATTR.get(category, "depreciation_other_pct")
     if attr is None or months_elapsed <= 0:
         return base_price
@@ -181,7 +184,7 @@ def get_mvi_suggestion(
       suggestion  → min / recommended / max / hard_max
       alerts      → advertencias contextuales
     """
-    config     = MVIConfig.get()
+    config     = MVIConfig.get()   # Fix #6: un solo DB hit, se pasa a las sub-funciones
     attributes = attributes or {}
     alerts     = []
 
@@ -194,7 +197,7 @@ def get_mvi_suggestion(
         if karat_raw and weight_raw:
             try:
                 intrinsic_value = calculate_jewelry_value(
-                    int(karat_raw), Decimal(str(weight_raw)), metal
+                    int(karat_raw), Decimal(str(weight_raw)), metal, config=config
                 )
                 alerts.append({
                     "type":    "INTRINSIC_VALUE_CALCULATED",
@@ -224,7 +227,7 @@ def get_mvi_suggestion(
 
         if months_elapsed > 0 and dep_rate > 0:
             raw_base   = history["last_amount"]
-            base_price = apply_depreciation(raw_base, category, months_elapsed)
+            base_price = apply_depreciation(raw_base, category, months_elapsed, config=config)
             depreciation_info = {
                 "base_reference":    str(raw_base),
                 "months_elapsed":    months_elapsed,

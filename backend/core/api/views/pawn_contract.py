@@ -62,15 +62,7 @@ class PawnContractCreateView(APIView):
         # ── MVI: validar monto antes de crear el contrato ─────────────────────
         items_data_pre = serializer.validated_data.get("items", [])
         if items_data_pre:
-            first_item = items_data_pre[0]
-            item_category   = first_item.get("category", "OTHER")
-            item_description = first_item.get("description", "")
-            item_condition  = first_item.get("condition", "GOOD")
-
-            # Atributos de joyería (karat, weight_grams) si vienen en el item
-            item_attrs = first_item.get("attributes", {})
-
-            # Categoría del cliente para bonus VIP
+            # Fix #4: evaluar todos los items y sumar recomendaciones
             customer_ci_pre = serializer.validated_data.get("customer_ci", "").strip().upper()
             customer_cat_pre = None
             if customer_ci_pre:
@@ -78,13 +70,40 @@ class PawnContractCreateView(APIView):
                 if _cust_pre:
                     customer_cat_pre = _cust_pre.category
 
-            mvi_result  = get_mvi_suggestion(
-                category=item_category,
-                description=item_description,
-                condition=item_condition,
-                attributes=item_attrs,
-                customer_category=customer_cat_pre,
-            )
+            from decimal import Decimal as D
+            total_recommended = D("0")
+            total_hard_max    = D("0")
+            total_soft_max    = D("0")
+            has_suggestion    = False
+
+            for _item in items_data_pre:
+                _result = get_mvi_suggestion(
+                    category=_item.get("category", "OTHER"),
+                    description=_item.get("description", ""),
+                    condition=_item.get("condition", "GOOD"),
+                    attributes=_item.get("attributes", {}),
+                    customer_category=customer_cat_pre,
+                )
+                if _result.get("suggestion"):
+                    s = _result["suggestion"]
+                    total_recommended += D(s["recommended"])
+                    total_hard_max    += D(s["hard_max_before_block"])
+                    total_soft_max    += D(s["max_soft_warning"])
+                    has_suggestion = True
+
+            # Construir suggestion sintética para validate_principal_against_mvi
+            if has_suggestion:
+                mvi_result = {
+                    "suggestion": {
+                        "recommended":           str(total_recommended),
+                        "max_soft_warning":      str(total_soft_max),
+                        "hard_max_before_block": str(total_hard_max),
+                    },
+                    "config_snapshot": _result.get("config_snapshot", {}),
+                }
+            else:
+                mvi_result = {"suggestion": None}
+
             mvi_check = validate_principal_against_mvi(principal, mvi_result)
 
             if mvi_check["status"] == "HARD_BLOCK":
@@ -135,23 +154,13 @@ class PawnContractCreateView(APIView):
 
         investor_id = serializer.validated_data.get("investor_id")
 
+        # Validación previa de existencia del inversor (sin lock todavía)
         investor = None
         if investor_id:
             try:
                 investor = Investor.objects.get(public_id=investor_id)
             except Investor.DoesNotExist:
                 return Response({"detail": "Inversionista no encontrado."}, status=404)
-
-            account = InvestorAccount.objects.select_for_update().get(investor=investor)
-
-            if account.balance < principal:
-                return Response(
-                    {
-                        "detail": "Fondos insuficientes del inversionista.",
-                        "available_balance": str(account.balance)
-                    },
-                    status=400
-                )
 
         start_date = serializer.validated_data.get(
             "start_date", timezone.now().date()
@@ -166,6 +175,19 @@ class PawnContractCreateView(APIView):
         items_data = serializer.validated_data.get("items", [])
 
         with transaction.atomic():
+
+            # Fix #1: select_for_update DENTRO del atomic para evitar race condition
+            account = None
+            if investor:
+                account = InvestorAccount.objects.select_for_update().get(investor=investor)
+                if account.balance < principal:
+                    return Response(
+                        {
+                            "detail": "Fondos insuficientes del inversionista.",
+                            "available_balance": str(account.balance)
+                        },
+                        status=400
+                    )
 
             # Rellenar campos de texto legacy desde el objeto Customer si existe
             customer_full_name = serializer.validated_data["customer_full_name"]
@@ -192,12 +214,11 @@ class PawnContractCreateView(APIView):
             # Incrementar contador de contratos del cliente (atómico)
             if customer:
                 increment_contract_count(customer)
-            # ASIGNAR INVERSIONISTA
-            if investor:
+            # ASIGNAR INVERSIONISTA (account ya bloqueado con select_for_update)
+            if investor and account:
                 contract.investor = investor
                 contract.save(update_fields=["investor"])
 
-                # descontar saldo
                 account.balance -= principal
                 account.save(update_fields=["balance"])
 

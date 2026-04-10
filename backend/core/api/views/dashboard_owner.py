@@ -5,7 +5,7 @@ GET /api/dashboard/owner
 from decimal import Decimal
 from datetime import date, timedelta
 
-from django.db.models import Sum, Count, Q, Avg
+from django.db.models import Sum, Count, Q
 from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -114,27 +114,39 @@ class OwnerDashboardView(APIView):
             status="APPROVED", authorized_at__date__gte=month_start
         ).count()
 
-        # ── 5. Por sucursal ───────────────────────────────────────────────────
+        # ── 5. Por sucursal — Fix #9: aggregates batch en vez de N queries por sucursal
+        # Un solo query por métrica, agrupado por branch
+        active_by_branch = {
+            r["branch_id"]: r["cnt"]
+            for r in contracts_qs.filter(status="ACTIVE")
+            .values("branch_id").annotate(cnt=Count("id"))
+        }
+        overdue_by_branch = {
+            r["branch_id"]: r["cnt"]
+            for r in contracts_qs.filter(status="ACTIVE", due_date__lt=today)
+            .values("branch_id").annotate(cnt=Count("id"))
+        }
+        capital_by_branch = {
+            r["branch_id"]: r["total"] or Decimal("0")
+            for r in contracts_qs.filter(status="ACTIVE")
+            .values("branch_id").annotate(total=Sum("principal_amount"))
+        }
+        payments_by_branch = {
+            r["branch_id"]: r["total"] or Decimal("0")
+            for r in CashMovement.objects.filter(
+                movement_type="PAYMENT_IN", performed_at__date__gte=month_start
+            ).values("branch_id").annotate(total=Sum("amount"))
+        }
+
         branches_data = []
         for branch in Branch.objects.all().order_by("code"):
-            b_active = contracts_qs.filter(status="ACTIVE", branch=branch).count()
-            b_overdue = contracts_qs.filter(
-                status="ACTIVE", due_date__lt=today, branch=branch
-            ).count()
-            b_capital = contracts_qs.filter(status="ACTIVE", branch=branch).aggregate(
-                total=Sum("principal_amount")
-            )["total"] or Decimal("0")
-            b_payments_month = movements_month.filter(
-                movement_type="PAYMENT_IN", branch=branch
-            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-
             branches_data.append({
-                "branch_code":      branch.code,
-                "branch_name":      branch.name,
-                "active_contracts": b_active,
-                "overdue_contracts": b_overdue,
-                "capital_deployed": str(b_capital),
-                "payments_month":   str(b_payments_month),
+                "branch_code":       branch.code,
+                "branch_name":       branch.name,
+                "active_contracts":  active_by_branch.get(branch.id, 0),
+                "overdue_contracts": overdue_by_branch.get(branch.id, 0),
+                "capital_deployed":  str(capital_by_branch.get(branch.id, Decimal("0"))),
+                "payments_month":    str(payments_by_branch.get(branch.id, Decimal("0"))),
             })
 
         return Response({
