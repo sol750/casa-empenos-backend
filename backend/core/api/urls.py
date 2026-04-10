@@ -93,6 +93,9 @@ from core.api.views.hr_aguinaldo import (
     AguinaldoDetailView, EmployeeAguinaldoHistoryView,
 )
 from core.api.views.reports_hr_aguinaldo import AguinaldoReportView
+from core.api.views.reports_hr_payroll import PayrollReportView
+from core.api.views.reports_hr_attendance import AttendanceReportView
+from core.api.views.reports_hr_employees import EmployeeDirectoryReportView
 from core.api.views.hr_termination import (
     EmployeeTerminationView, EmployeeAuditLogView,
 )
@@ -215,4 +218,7 @@ urlpatterns = [
 
     # ── Reportes RRHH ────────────────────────────────────────────────────────
     path("reports/hr/aguinaldo/<int:year>",            AguinaldoReportView.as_view()),
+    path("reports/hr/payroll/<int:year>/<int:month>",  PayrollReportView.as_view()),
+    path("reports/hr/attendance/<int:year>/<int:month>", AttendanceReportView.as_view()),
+    path("reports/hr/employees",                       EmployeeDirectoryReportView.as_view()),
 ]
