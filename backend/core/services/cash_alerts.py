@@ -91,17 +91,19 @@ def calculate_surplus(session: "CashSession") -> dict:
             .aggregate(s=Sum("amount"))["s"]
         ) or Decimal("0.00")
 
-    # Ingresos
+    # Ingresos operativos (excluye CAPITAL_IN para no inflar utilidades)
     payment_in    = sum_type("PAYMENT_IN")
     transfer_in   = sum_type("TRANSFER_IN", "VAULT_OUT")
     adj_in        = sum_type("ADJUSTMENT_IN")
+    capital_in    = sum_type("CAPITAL_IN")   # capital del dueño (no es utilidad)
 
-    # Egresos
+    # Egresos operativos (excluye CAPITAL_OUT para no distorsionar el gasto)
     loan_out      = sum_type("LOAN_OUT")
     purchase_out  = sum_type("PURCHASE_OUT")
     expense_out   = sum_type("EXPENSE_OUT")
     transfer_out  = sum_type("TRANSFER_OUT", "VAULT_IN")
     adj_out       = sum_type("ADJUSTMENT_OUT")
+    capital_out   = sum_type("CAPITAL_OUT")  # retiro del dueño (no es gasto)
 
     # Separar capital vs utilidad de los pagos recibidos
     payment_stats = (
@@ -113,24 +115,27 @@ def calculate_surplus(session: "CashSession") -> dict:
     profit_earned      = payment_stats["interest_sum"]  or Decimal("0.00")
     capital_recovered  = payment_stats["principal_sum"] or Decimal("0.00")
 
-    net_flow = (payment_in + transfer_in + adj_in) - (loan_out + purchase_out + expense_out + transfer_out + adj_out)
-    net_surplus = session.expected_balance - session.opening_amount
+    # net_surplus excluye el capital del dueño — refleja solo la utilidad operativa
+    net_surplus = session.expected_balance - session.opening_amount - capital_in + capital_out
 
     return {
         "opening_amount":     str(session.opening_amount),
         "current_balance":    str(session.expected_balance),
-        "net_surplus":        str(net_surplus),
-        # Ingresos
+        "net_surplus":        str(net_surplus),         # utilidad real del turno
+        # Flujo del dueño (separado para auditoría)
+        "capital_injected":   str(capital_in),
+        "capital_withdrawn":  str(capital_out),
+        # Ingresos operativos
         "payment_in":         str(payment_in),
         "capital_recovered":  str(capital_recovered),
-        "profit_earned":      str(profit_earned),      # UC
+        "profit_earned":      str(profit_earned),       # UC (intereses cobrados)
         "transfer_in":        str(transfer_in),
-        # Egresos
-        "loan_out":           str(loan_out),           # CN
-        "purchase_out":       str(purchase_out),       # CD
-        "expense_out":        str(expense_out),        # G
+        # Egresos operativos
+        "loan_out":           str(loan_out),            # CN
+        "purchase_out":       str(purchase_out),        # CD
+        "expense_out":        str(expense_out),         # G
         "transfer_out":       str(transfer_out),
-        # Recomendación de bóveda
+        # Recomendación de bóveda (solo el excedente sobre el mínimo)
         "recommended_vault_transfer": str(
             max(Decimal("0.00"), session.expected_balance - session.cash_register.min_balance)
         ),

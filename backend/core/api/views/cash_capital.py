@@ -107,8 +107,13 @@ class CashCapitalView(APIView):
                 note          = note,
             )
 
-        # Calcular saldo después
-        balance = _get_session_balance(session)
+        # Validar umbrales post-inyección
+        from core.services.cash_alerts import check_balance_thresholds
+        threshold = check_balance_thresholds(session)
+
+        # La inyección nunca se bloquea (el dueño puede necesitar fondear antes
+        # de distribuir a sucursales), pero se alerta si supera max_balance.
+        alerts = threshold["alerts"]
 
         return Response(
             {
@@ -118,9 +123,12 @@ class CashCapitalView(APIView):
                 "source":        source,
                 "note":          note,
                 "performed_at":  movement.performed_at,
-                "balance_after": str(balance),
+                "balance_after": threshold["balance"],
+                "min_balance":   threshold["min_balance"],
+                "max_balance":   threshold["max_balance"],
                 "cash_register": register.name,
                 "register_type": register.register_type,
+                "alerts":        alerts,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -177,8 +185,32 @@ class CashCapitalWithdrawView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        # Verificar saldo disponible
-        balance = _get_session_balance(session)
+        # Verificar saldo disponible respetando el mínimo operativo de la caja
+        from core.services.cash_alerts import check_balance_thresholds
+        current = check_balance_thresholds(session)
+        balance = Decimal(current["balance"])
+        min_balance = Decimal(current["min_balance"])
+
+        # No se puede retirar si el saldo resultante quedaría bajo el mínimo
+        # Excepción: cajas GLOBAL/VAULT pueden tener min_balance=0
+        balance_after_projected = balance - amount
+        if balance_after_projected < min_balance:
+            withdrawable = balance - min_balance
+            return Response(
+                {
+                    "detail": (
+                        f"El retiro dejaría la caja por debajo del mínimo operativo "
+                        f"(Bs.{min_balance:,.2f}). "
+                        f"Máximo retirable en este momento: Bs.{max(withdrawable, Decimal('0')):,.2f}."
+                    ),
+                    "current_balance":   str(balance),
+                    "min_balance":       str(min_balance),
+                    "requested":         str(amount),
+                    "max_withdrawable":  str(max(withdrawable, Decimal("0"))),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if amount > balance:
             return Response(
                 {
@@ -200,7 +232,8 @@ class CashCapitalWithdrawView(APIView):
                 note          = note,
             )
 
-        balance_after = _get_session_balance(session)
+        threshold_after = check_balance_thresholds(session)
+        balance_after = Decimal(threshold_after["balance"])
 
         return Response(
             {
@@ -209,6 +242,7 @@ class CashCapitalWithdrawView(APIView):
                 "amount":        str(movement.amount),
                 "reason":        reason,
                 "note":          note,
+                "min_balance":   str(min_balance),
                 "performed_at":  movement.performed_at,
                 "balance_before": str(balance),
                 "balance_after":  str(balance_after),
