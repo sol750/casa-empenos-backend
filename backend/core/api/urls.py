@@ -117,6 +117,17 @@ from core.api.views.whatsapp_mvi_notify import (
     MVIOverridePendingAlertView,
     MVIOverrideWhatsAppAlertView,
 )
+
+# ── Panel financiero del dueño ────────────────────────────────────────────────
+from core.api.views.owner_treasury import OwnerTreasuryView
+from core.api.views.owner_profitability import OwnerProfitabilityView
+from core.api.views.owner_investors import (
+    OwnerInvestorListView,
+    OwnerInvestorStatementView,
+    OwnerInvestorDepositView,
+    OwnerInvestorProfitView,
+    OwnerInvestorWithdrawView,
+)
 from core.api.views.reports_mvi import MVIOverrideReportView, MVIStatsReportView
 from core.api.views.dashboard_owner import OwnerDashboardView
 from core.api.views.reports_vitrina import VitrinaReportView
@@ -252,6 +263,15 @@ urlpatterns = [
 
     # ── Dashboard dueño ──────────────────────────────────────────────────────
     path("dashboard/owner",                            OwnerDashboardView.as_view()),
+
+    # ── Panel financiero del dueño ────────────────────────────────────────────
+    path("owner/treasury",                             OwnerTreasuryView.as_view()),
+    path("owner/profitability",                        OwnerProfitabilityView.as_view()),
+    path("owner/investors",                            OwnerInvestorListView.as_view()),
+    path("owner/investors/<uuid:investor_id>/statement",  OwnerInvestorStatementView.as_view()),
+    path("owner/investors/<uuid:investor_id>/deposit",    OwnerInvestorDepositView.as_view()),
+    path("owner/investors/<uuid:investor_id>/profit",     OwnerInvestorProfitView.as_view()),
+    path("owner/investors/<uuid:investor_id>/withdraw",   OwnerInvestorWithdrawView.as_view()),
 
     # ── Reportes MVI ─────────────────────────────────────────────────────────
     path("reports/mvi/overrides",                      MVIOverrideReportView.as_view()),
