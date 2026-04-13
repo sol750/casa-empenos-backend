@@ -5,9 +5,13 @@ Determina cuánto puede empeñar un cliente y a qué tasa,
 combinando su categoría (BRONCE/PLATA/ORO) con su score actual
 y la deuda activa pendiente.
 
-Además integra la política de descuento de tasa para clientes ORO:
-  Si el cliente es ORO → se aplica un descuento de 0.5% sobre la tasa base.
-  La tasa mínima nunca baja del 5.00% mensual.
+Las tasas base se leen de InterestCategoryConfig (BD) si existen,
+con fallback a los defaults hardcoded para garantizar arranque limpio.
+
+Jerarquía de tasa (mayor prioridad primero):
+  1. customer.custom_rate_pct (tasa individual)
+  2. InterestCategoryConfig[category].base_rate_pct (config en BD)
+  3. CATEGORY_CONFIG[category]["base_rate"] (default hardcoded)
 """
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from core.models import Customer
 
-# ── Parámetros por categoría ───────────────────────────────────────────────────
+# ── Defaults hardcoded (fallback si no hay config en BD) ─────────────────────
 CATEGORY_CONFIG: dict[str, dict] = {
     "BRONCE": {
         "base_rate":    Decimal("10.00"),
@@ -33,9 +37,24 @@ CATEGORY_CONFIG: dict[str, dict] = {
     },
 }
 
-# Descuento exclusivo ORO (sobre la tasa base de la política de monto)
+# Descuento exclusivo ORO (sobre la tasa base)
 ORO_RATE_DISCOUNT   = Decimal("0.50")
 MIN_ALLOWED_RATE    = Decimal("5.00")
+
+
+def _get_category_config(category: str) -> dict:
+    """
+    Retorna {base_rate, max_principal} para la categoría dada.
+    Lee de InterestCategoryConfig en BD; si no existe usa el default.
+    """
+    try:
+        from core.models import InterestCategoryConfig
+        cfg = InterestCategoryConfig.objects.filter(category=category).first()
+        if cfg:
+            return {"base_rate": cfg.base_rate_pct, "max_principal": cfg.max_principal}
+    except Exception:
+        pass
+    return CATEGORY_CONFIG[category]
 
 
 def calculate_credit_line(customer: "Customer") -> dict:
@@ -53,7 +72,7 @@ def calculate_credit_line(customer: "Customer") -> dict:
     from django.db.models import Sum
     from core.models import PawnContract
 
-    config = CATEGORY_CONFIG[customer.category]
+    config = _get_category_config(customer.category)
 
     # Factor de score: score 50 → 75 % del máximo; score 100 → 100 %
     # Fórmula: factor = 0.5 + (score / 100) * 0.5
@@ -70,10 +89,13 @@ def calculate_credit_line(customer: "Customer") -> dict:
 
     available = max(Decimal("0.00"), max_amount - active_debt)
 
-    # Tasa aplicable (sin considerar aún el monto específico del nuevo contrato)
-    rate = config["base_rate"]
-    if customer.category == "ORO":
-        rate = max(MIN_ALLOWED_RATE, rate - ORO_RATE_DISCOUNT)
+    # Tasa aplicable: custom_rate del cliente > config categoría
+    if getattr(customer, "custom_rate_pct", None) is not None:
+        rate = customer.custom_rate_pct
+    else:
+        rate = config["base_rate"]
+        if customer.category == "ORO":
+            rate = max(MIN_ALLOWED_RATE, rate - ORO_RATE_DISCOUNT)
 
     return {
         "max_amount":             max_amount,
@@ -83,24 +105,27 @@ def calculate_credit_line(customer: "Customer") -> dict:
         "category":               customer.category,
         "score":                  customer.score,
         "risk_color":             customer.risk_color,
+        "custom_rate":            getattr(customer, "custom_rate_pct", None) is not None,
     }
 
 
 def get_applicable_rate(customer: "Customer | None", principal: Decimal) -> Decimal:
     """
-    Tasa mensual para un nuevo contrato, combinando:
-      1. La política base por monto (interest_policy.py)
-      2. El descuento ORO si aplica
-
-    Úsalo en PawnContractCreateView para reemplazar la llamada directa
-    a interest_rate_monthly_for_principal().
+    Tasa mensual para un nuevo contrato.
+    Jerarquía: custom_rate > categoría BD > política por monto.
     """
+    # 1. Tasa individual del cliente
+    if customer is not None and getattr(customer, "custom_rate_pct", None) is not None:
+        return customer.custom_rate_pct
+
+    # 2. Tasa por categoría (BD o default)
+    if customer is not None:
+        config = _get_category_config(customer.category)
+        rate = config["base_rate"]
+        if customer.category == "ORO":
+            rate = max(MIN_ALLOWED_RATE, rate - ORO_RATE_DISCOUNT)
+        return rate
+
+    # 3. Política por monto (sin cliente)
     from core.services.interest_policy import interest_rate_monthly_for_principal
-
-    base_rate = interest_rate_monthly_for_principal(principal)
-
-    if customer is not None and customer.category == "ORO":
-        discounted = base_rate - ORO_RATE_DISCOUNT
-        return max(MIN_ALLOWED_RATE, discounted)
-
-    return base_rate
+    return interest_rate_monthly_for_principal(principal)

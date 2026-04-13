@@ -1,11 +1,17 @@
 """
 Servicio de amortización de contratos.
 Solo aplica cuando el contrato está en estado ACTIVO (today < due_date).
+
+Regla de negocio:
+  - La fecha de vencimiento NO se modifica al amortizar. El cliente sigue
+    teniendo la misma fecha de renovación/cierre que al crear el contrato.
+  - Al cerrar un contrato con amortizaciones previas, el interés a cobrar
+    es el interés original del primer mes (principal_amount × tasa mensual),
+    no un prorrateo por días. Esto se aplica en pawn_payment.py.
 """
 from datetime import date
 from decimal import Decimal
 
-from dateutil.relativedelta import relativedelta
 from django.db import transaction
 from django.utils import timezone
 
@@ -21,9 +27,10 @@ def calculate_amortization_preview(contract, capital_to_pay: Decimal, today: dat
     """
     Calcula los montos de una amortización sin tocar la BD.
     Lanza ValueError si el contrato no está ACTIVO.
+    La fecha de vencimiento no cambia.
     """
     if today is None:
-        today = date.today()
+        today = timezone.now().date()
 
     state = get_contract_state(contract, today)
     if state != ContractState.ACTIVO:
@@ -51,9 +58,9 @@ def calculate_amortization_preview(contract, capital_to_pay: Decimal, today: dat
     )
 
     new_principal = (outstanding - capital_to_pay).quantize(Decimal("0.01"))
-    new_due_date  = today + relativedelta(months=1)
     total_to_pay  = (interest_due + capital_to_pay).quantize(Decimal("0.01"))
 
+    # La fecha de vencimiento permanece igual — no se renueva al amortizar
     return {
         "state":                  state,
         "outstanding_principal":  outstanding,
@@ -62,7 +69,7 @@ def calculate_amortization_preview(contract, capital_to_pay: Decimal, today: dat
         "total_to_pay":           total_to_pay,
         "new_principal":          new_principal,
         "previous_due_date":      contract.due_date,
-        "new_due_date":           new_due_date,
+        "new_due_date":           contract.due_date,   # sin cambio
         "interest_rate_monthly":  contract.interest_rate_monthly,
     }
 
@@ -73,7 +80,7 @@ def create_amortization(contract, capital_to_pay: Decimal, cash_session, user, n
       1. Crea PawnPayment (contabilidad)
       2. Crea PawnAmortization (adenda)
       3. CashMovement PAYMENT_IN
-      4. Actualiza due_date e interest_accrued_until del contrato
+      4. Actualiza interest_accrued_until (la due_date NO cambia)
     Retorna (PawnAmortization, preview_dict).
     """
     from core.models import PawnContract, PawnPayment, PawnAmortization, CashMovement
@@ -86,16 +93,16 @@ def create_amortization(contract, capital_to_pay: Decimal, cash_session, user, n
 
         # 1) Pago contable (interés + capital)
         PawnPayment.objects.create(
-            contract     = contract,
-            cash_session = cash_session,
-            paid_by      = user,
-            amount       = preview["total_to_pay"],
-            interest_paid = preview["interest_due"],
+            contract       = contract,
+            cash_session   = cash_session,
+            paid_by        = user,
+            amount         = preview["total_to_pay"],
+            interest_paid  = preview["interest_due"],
             principal_paid = capital_to_pay,
-            note          = note or f"Amortización – adenda #{contract.amortizations.count() + 1}",
+            note           = note or f"Amortización – adenda #{contract.amortizations.count() + 1}",
         )
 
-        # 2) Registro de adenda
+        # 2) Registro de adenda (new_due_date == previous_due_date: sin cambio)
         amort = PawnAmortization.objects.create(
             contract           = contract,
             cash_session       = cash_session,
@@ -104,7 +111,7 @@ def create_amortization(contract, capital_to_pay: Decimal, cash_session, user, n
             capital_paid       = capital_to_pay,
             interest_paid      = preview["interest_due"],
             previous_due_date  = contract.due_date,
-            new_due_date       = preview["new_due_date"],
+            new_due_date       = contract.due_date,   # sin cambio
             note               = note,
         )
 
@@ -119,9 +126,8 @@ def create_amortization(contract, capital_to_pay: Decimal, cash_session, user, n
             note           = f"Amortización contrato {contract.contract_number}",
         )
 
-        # 4) Actualizar contrato
-        contract.due_date              = preview["new_due_date"]
+        # 4) Actualizar solo interest_accrued_until — due_date no cambia
         contract.interest_accrued_until = today
-        contract.save(update_fields=["due_date", "interest_accrued_until"])
+        contract.save(update_fields=["interest_accrued_until"])
 
     return amort, preview

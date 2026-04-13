@@ -132,6 +132,20 @@ from core.api.views.reports_mvi import MVIOverrideReportView, MVIStatsReportView
 from core.api.views.dashboard_owner import OwnerDashboardView
 from core.api.views.reports_vitrina import VitrinaReportView
 
+# ── Tasas de interés configurables ───────────────────────────────────────────
+from core.api.views.interest_rate_config import (
+    InterestCategoryConfigView,
+    CustomerRateView,
+)
+
+# ── Gestión de sucursales y cajas (OWNER_ADMIN) ───────────────────────────────
+from core.api.views.branch_management import (
+    BranchListCreateView,
+    BranchDetailView,
+    BranchCashRegisterCreateView,
+    CashRegisterSettingsView,
+)
+
 
 urlpatterns = [
 
@@ -285,4 +299,14 @@ urlpatterns = [
     path("reports/hr/payroll/<int:year>/<int:month>",  PayrollReportView.as_view()),
     path("reports/hr/attendance/<int:year>/<int:month>", AttendanceReportView.as_view()),
     path("reports/hr/employees",                       EmployeeDirectoryReportView.as_view()),
+
+    # ── Tasas de interés ──────────────────────────────────────────────────────
+    path("interest-rates/categories",                  InterestCategoryConfigView.as_view()),
+    path("customers/<str:ci>/rate",                    CustomerRateView.as_view()),
+
+    # ── Gestión de sucursales y cajas ────────────────────────────────────────
+    path("branches",                                   BranchListCreateView.as_view()),
+    path("branches/<int:branch_id>",                   BranchDetailView.as_view()),
+    path("branches/<int:branch_id>/cash-registers",    BranchCashRegisterCreateView.as_view()),
+    path("cash-registers/<uuid:register_id>/settings", CashRegisterSettingsView.as_view()),
 ]

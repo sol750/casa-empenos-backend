@@ -15,9 +15,9 @@ class PawnContractCreateSerializer(serializers.Serializer):
     due_date = serializers.DateField(required=False)
 
     interest_mode = serializers.ChoiceField(
-        choices=["MONTHLY_PRORATED", "FIXED", "PROMO"],
+        choices=["FIXED", "PROMO"],
         required=False,
-        default="MONTHLY_PRORATED",
+        default="FIXED",
     )
 
     promo_note = serializers.CharField(required=False, allow_blank=True, default="")

@@ -89,12 +89,15 @@ class PawnContractDetailView(APIView):
         # ── Artículos empeñados ───────────────────────────────────────────────
         items = [
             {
+                "item_id":         str(item.public_id),
                 "category":        item.category,
                 "description":     item.description,
                 "attributes":      item.attributes,
                 "has_box":         item.has_box,
                 "has_charger":     item.has_charger,
-                "condition_notes": item.observations,  # alias de observations
+                "condition":       item.condition,
+                "condition_notes": item.observations,
+                "loan_amount":     str(item.loan_amount) if item.loan_amount is not None else None,
             }
             for item in contract.items.all()
         ]

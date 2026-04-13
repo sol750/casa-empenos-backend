@@ -232,17 +232,20 @@ class PawnContractCreateView(APIView):
                 )
 
             # 🔹 Crear items
+            created_items = []
             for item in items_data:
-                PawnItem.objects.create(
+                pawn_item = PawnItem.objects.create(
                     contract=contract,
                     category=item["category"],
                     description=item.get("description", ""),
                     attributes=item.get("attributes", {}),
                     has_box=item.get("has_box", False),
                     has_charger=item.get("has_charger", False),
-                    observations=item.get("condition_notes", ""),
+                    observations=item.get("observations", ""),
                     condition=item.get("condition", "GOOD"),
+                    loan_amount=item.get("loan_amount"),
                 )
+                created_items.append(pawn_item)
 
             # 🔹 Vincular override MVI aprobado al contrato (si aplica)
             if items_data_pre and override_id:
@@ -265,6 +268,17 @@ class PawnContractCreateView(APIView):
                 note=f"Desembolso contrato {contract.contract_number}",
             )
 
+        # Desglose de artículos con loan_amount individual
+        items_detail = []
+        for pi in created_items:
+            items_detail.append({
+                "item_id":     str(pi.public_id),
+                "category":    pi.category,
+                "description": pi.description,
+                "condition":   pi.condition,
+                "loan_amount": str(pi.loan_amount) if pi.loan_amount is not None else None,
+            })
+
         response_data = {
             "pawn_contract_id":      str(contract.public_id),
             "contract_number":       contract.contract_number,
@@ -275,6 +289,9 @@ class PawnContractCreateView(APIView):
             "promo_note":            contract.promo_note,
             "start_date":            str(contract.start_date),
             "due_date":              str(contract.due_date),
+            # Artículos empeñados con desglose individual
+            "items":                 items_detail,
+            "items_count":           len(items_detail),
             # Info del cliente vinculado
             "customer_linked":       customer is not None,
             "customer_category":     customer.category if customer else None,

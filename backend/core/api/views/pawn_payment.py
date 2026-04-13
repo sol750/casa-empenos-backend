@@ -71,19 +71,30 @@ class PawnPaymentCreateView(APIView):
             if outstanding_principal <= 0:
                 return Response({"detail": "El contrato ya no tiene capital pendiente."}, status=status.HTTP_409_CONFLICT)
 
-            from_date = contract.interest_accrued_until or contract.start_date
+            has_amortizations = contract.amortizations.exists()
 
-            # Período de gracia (días 0-5 post vencimiento): congelar interés al due_date
-            # Evita cobrar días extra que el cliente no debe (beneficio VIP/recurrente).
-            state = get_contract_state(contract, payment_date)
-            interest_to = contract.due_date if state == ContractState.VENCIDO else payment_date
+            if has_amortizations:
+                # Contratos con amortizaciones previas: el interés de cierre es el
+                # primer interés mensual fijo calculado sobre el capital ORIGINAL.
+                # No se proratea por días — el cliente ya pagó intereses en cada adenda.
+                interest_due = (
+                    contract.principal_amount
+                    * contract.interest_rate_monthly
+                    / Decimal("100")
+                ).quantize(Decimal("0.01"))
+            else:
+                from_date = contract.interest_accrued_until or contract.start_date
 
-            interest_due = prorated_interest(
-                principal=outstanding_principal,
-                monthly_rate_percent=contract.interest_rate_monthly,
-                from_date=from_date,
-                to_date=interest_to,
-            )
+                # Período de gracia (días 0-5 post vencimiento): congelar interés al due_date
+                state = get_contract_state(contract, payment_date)
+                interest_to = contract.due_date if state == ContractState.VENCIDO else payment_date
+
+                interest_due = prorated_interest(
+                    principal=outstanding_principal,
+                    monthly_rate_percent=contract.interest_rate_monthly,
+                    from_date=from_date,
+                    to_date=interest_to,
+                )
 
             interest_paid = min(payment_amount, interest_due)
             remaining = payment_amount - interest_paid

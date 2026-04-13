@@ -155,32 +155,24 @@ class CashSession(models.Model):
         return f"{self.cash_register} - {self.status} - {self.opened_at:%Y-%m-%d %H:%M}"
     @property
     def expected_balance(self):
-        # Si la sesión ya fue cerrada, usamos el valor guardado (inmutable)
+        # Si la sesión ya fue cerrada, devolvemos el valor guardado en DB (inmutable)
         if self.closing_expected_amount is not None:
             return self.closing_expected_amount
 
-        # Movimientos _IN suman, movimientos _OUT restan
-        # Usamos agregación en DB para eficiencia (evita iterar en Python)
-        from django.db.models import Case, When, F, DecimalField
+        # Dos consultas simples: suma entradas y suma salidas
+        # (más confiable que Case/When para evitar falsos ceros)
+        total_in = (
+            self.movements
+            .filter(movement_type__endswith="_IN")
+            .aggregate(t=Sum("amount"))["t"]
+        ) or Decimal("0.00")
 
-        agg = self.movements.aggregate(
-            total_in=Sum(
-                Case(
-                    When(movement_type__endswith="_IN", then=F("amount")),
-                    default=Decimal("0.00"),
-                    output_field=DecimalField(),
-                )
-            ),
-            total_out=Sum(
-                Case(
-                    When(movement_type__endswith="_OUT", then=F("amount")),
-                    default=Decimal("0.00"),
-                    output_field=DecimalField(),
-                )
-            ),
-        )
-        total_in = agg["total_in"] or Decimal("0.00")
-        total_out = agg["total_out"] or Decimal("0.00")
+        total_out = (
+            self.movements
+            .filter(movement_type__endswith="_OUT")
+            .aggregate(t=Sum("amount"))["t"]
+        ) or Decimal("0.00")
+
         return self.opening_amount + total_in - total_out
 
     
@@ -271,11 +263,11 @@ class PawnContract(models.Model):
     start_date = models.DateField(default=timezone.now)
     due_date = models.DateField()  # fecha vencimiento
 
-    # Promos / prorrateo: guardamos regla aplicada para auditoría
+    # Modo de interés aplicado al contrato
     interest_mode = models.CharField(
         max_length=20,
-        default="MONTHLY_PRORATED",
-        help_text="MONTHLY_PRORATED (por días) / FIXED / PROMO"
+        default="FIXED",
+        help_text="FIXED (mensual fijo) / PROMO (condición especial)"
     )
     promo_note = models.CharField(max_length=255, blank=True, default="")
 
@@ -383,6 +375,14 @@ class PawnItem(models.Model):
     condition    = models.CharField(max_length=20, choices=Condition.choices, default=Condition.GOOD,
                                     help_text="Estado del artículo: ajusta la sugerencia MVI")
     observations = models.TextField(blank=True)
+
+    # Monto prestado por este artículo (parte proporcional del principal_amount)
+    # Útil cuando hay múltiples artículos y se quiere calcular precio de venta por ítem.
+    loan_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        null=True, blank=True,
+        help_text="Capital prestado atribuido a este artículo específico",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -550,6 +550,14 @@ class Customer(models.Model):
     category = models.CharField(
         max_length=10, choices=Category.choices, default=Category.BRONCE,
     )
+
+    # Tasa personalizada (anula política de categoría si está definida)
+    custom_rate_pct = models.DecimalField(
+        max_digits=6, decimal_places=2,
+        null=True, blank=True,
+        help_text="Tasa mensual personalizada. Vacío = usar política de categoría.",
+    )
+
     score = models.IntegerField(
         default=50,
         validators=[MinValueValidator(0), MaxValueValidator(100)],
@@ -772,6 +780,44 @@ class CashExpense(models.Model):
 
     def __str__(self):
         return f"[{self.category}] {self.description[:40]} – {self.cash_movement.amount} Bs."
+
+class InterestCategoryConfig(models.Model):
+    """
+    Configuración de tasas de interés por categoría de cliente.
+    El dueño puede ajustar las tasas base sin tocar el código.
+    Si no existe un registro para una categoría se usan los defaults del código.
+    """
+    class Category(models.TextChoices):
+        BRONCE = "BRONCE", "Bronce"
+        PLATA  = "PLATA",  "Plata"
+        ORO    = "ORO",    "Oro"
+
+    category = models.CharField(
+        max_length=10, choices=Category.choices, unique=True,
+    )
+    base_rate_pct = models.DecimalField(
+        max_digits=6, decimal_places=2,
+        help_text="Tasa mensual base (%) para esta categoría",
+    )
+    max_principal = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        help_text="Capital máximo prestable para esta categoría (Bs.)",
+    )
+
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="interest_configs_updated",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Configuración de Tasa por Categoría"
+        verbose_name_plural = "Configuraciones de Tasas"
+
+    def __str__(self):
+        return f"{self.category}: {self.base_rate_pct}% / max {self.max_principal}"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MÓDULO RRHH — importado desde models_hr.py para que Django lo descubra
