@@ -20,7 +20,7 @@ from core.services.contract_state import (
     calculate_outstanding_principal,
     ContractState,
 )
-from core.services.interest_calc import prorated_interest
+from core.services.interest_calc import fixed_interest
 
 
 def calculate_amortization_preview(contract, capital_to_pay: Decimal, today: date = None) -> dict:
@@ -49,13 +49,7 @@ def calculate_amortization_preview(contract, capital_to_pay: Decimal, today: dat
             f"({outstanding}). Para cancelar la deuda completa use el endpoint de pago."
         )
 
-    from_date = contract.interest_accrued_until or contract.start_date
-    interest_due = prorated_interest(
-        principal=outstanding,
-        monthly_rate_percent=contract.interest_rate_monthly,
-        from_date=from_date,
-        to_date=today,
-    )
+    interest_due = fixed_interest(outstanding, contract.interest_rate_monthly)
 
     new_principal = (outstanding - capital_to_pay).quantize(Decimal("0.01"))
     total_to_pay  = (interest_due + capital_to_pay).quantize(Decimal("0.01"))

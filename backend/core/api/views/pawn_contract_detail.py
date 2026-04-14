@@ -7,7 +7,6 @@ from rest_framework.views import APIView
 from rest_framework import status
 
 from core.models import PawnContract
-from core.services.interest_calc import prorated_interest
 from core.services.contract_state import get_contract_state, ContractState, calculate_recovery_amount
 from core.api.security import require_roles, require_branch_access
 

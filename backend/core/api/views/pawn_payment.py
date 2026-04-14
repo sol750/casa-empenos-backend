@@ -10,9 +10,9 @@ from rest_framework.views import APIView
 from core.models import PawnContract, PawnPayment, CashSession, CashMovement
 from core.api.serializers.pawn_payment import PawnPaymentCreateSerializer
 from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
-from core.services.interest_calc import prorated_interest
+from core.services.interest_calc import fixed_interest
 from core.services.scoring_engine import apply_contract_closure_score
-from core.services.contract_state import get_contract_state, ContractState
+from core.services.contract_state import get_contract_state
 
 
 class PawnPaymentCreateView(APIView):
@@ -69,30 +69,16 @@ class PawnPaymentCreateView(APIView):
             if outstanding_principal <= 0:
                 return Response({"detail": "El contrato ya no tiene capital pendiente."}, status=status.HTTP_409_CONFLICT)
 
-            has_amortizations = contract.amortizations.exists()
-
-            if has_amortizations:
-                # Contratos con amortizaciones previas: el interés de cierre es el
-                # primer interés mensual fijo calculado sobre el capital ORIGINAL.
-                # No se proratea por días — el cliente ya pagó intereses en cada adenda.
-                interest_due = (
-                    contract.principal_amount
-                    * contract.interest_rate_monthly
-                    / Decimal("100")
-                ).quantize(Decimal("0.01"))
-            else:
-                from_date = contract.interest_accrued_until or contract.start_date
-
-                # Período de gracia (días 0-5 post vencimiento): congelar interés al due_date
-                state = get_contract_state(contract, payment_date)
-                interest_to = contract.due_date if state == ContractState.VENCIDO else payment_date
-
-                interest_due = prorated_interest(
-                    principal=outstanding_principal,
-                    monthly_rate_percent=contract.interest_rate_monthly,
-                    from_date=from_date,
-                    to_date=interest_to,
-                )
+            # Interés mensual fijo sobre el capital pendiente.
+            # Si el contrato tiene amortizaciones, el interés base es sobre el
+            # capital ORIGINAL (el cliente ya pagó intereses en cada adenda).
+            # En ambos casos: Capital × Tasa / 100 — sin prorrateo por días.
+            interest_base = (
+                contract.principal_amount
+                if contract.amortizations.exists()
+                else outstanding_principal
+            )
+            interest_due = fixed_interest(interest_base, contract.interest_rate_monthly)
 
             interest_paid = min(payment_amount, interest_due)
             remaining = payment_amount - interest_paid

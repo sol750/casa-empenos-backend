@@ -98,27 +98,16 @@ def calculate_recovery_amount(contract, today=None) -> dict:
     - VENCIDO (gracia): interés congelado al due_date.
     - ACTIVO / EN_MORA: interés prorrateado hasta hoy.
     """
-    from core.services.interest_calc import prorated_interest
+    from core.services.interest_calc import fixed_interest
 
     if today is None:
         today = timezone.now().date()
 
     state = get_contract_state(contract, today)
     outstanding = calculate_outstanding_principal(contract)
-    from_date = contract.interest_accrued_until or contract.start_date
 
-    # Durante el período de gracia el monto queda congelado al due_date
-    if state == ContractState.VENCIDO:
-        interest_to = contract.due_date
-    else:
-        interest_to = today
-
-    interest = prorated_interest(
-        principal=outstanding,
-        monthly_rate_percent=contract.interest_rate_monthly,
-        from_date=from_date,
-        to_date=interest_to,
-    )
+    # Interés mensual fijo sobre el capital pendiente — sin prorrateo por días
+    interest = fixed_interest(outstanding, contract.interest_rate_monthly)
 
     return {
         "state":                state,

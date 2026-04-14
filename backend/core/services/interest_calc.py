@@ -1,18 +1,19 @@
-from datetime import date
 from decimal import Decimal
 
 
-def prorated_interest(principal: Decimal, monthly_rate_percent: Decimal, from_date: date, to_date: date) -> Decimal:
+def fixed_interest(principal: Decimal, monthly_rate_percent: Decimal) -> Decimal:
     """
-    Interés prorrateado simple por días.
-    Base: tasa mensual / 30 días (convención).
-    - principal: capital pendiente
-    - monthly_rate_percent: ej 8.00
-    """
-    if to_date <= from_date:
-        return Decimal("0.00")
+    Interés mensual fijo sobre el capital ORIGINAL.
 
-    days = (to_date - from_date).days
-    daily_rate = (monthly_rate_percent / Decimal("100.00")) / Decimal("30.00")
-    interest = principal * daily_rate * Decimal(days)
+    Regla de negocio:
+      El interés es siempre un mes completo sin importar los días transcurridos.
+      Esto refleja exactamente los libros físicos de la casa de empeños:
+        Interés = Capital × (Tasa% / 100)
+
+    Ejemplos:
+      fixed_interest(1000, 8)    → 80.00
+      fixed_interest(500,  7.5)  → 37.50
+      fixed_interest(2000, 6)    → 120.00
+    """
+    interest = principal * (monthly_rate_percent / Decimal("100.00"))
     return interest.quantize(Decimal("0.01"))

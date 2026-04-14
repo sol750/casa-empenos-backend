@@ -10,7 +10,7 @@ from rest_framework.views import APIView
 from core.models import PawnContract, PawnRenewal, CashSession, CashMovement
 from core.api.serializers.pawn_renewal import PawnRenewalCreateSerializer
 from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
-from core.services.interest_calc import prorated_interest
+from core.services.interest_calc import fixed_interest
 
 
 class PawnRenewalCreateView(APIView):
@@ -69,14 +69,7 @@ class PawnRenewalCreateView(APIView):
             if outstanding_principal <= 0:
                 return Response({"detail": "No se puede renovar un contrato sin capital pendiente."}, status=status.HTTP_409_CONFLICT)
 
-            from_date = contract.interest_accrued_until or contract.start_date
-
-            interest_due = prorated_interest(
-                principal=outstanding_principal,
-                monthly_rate_percent=contract.interest_rate_monthly,
-                from_date=from_date,
-                to_date=renew_date,
-            )
+            interest_due = fixed_interest(outstanding_principal, contract.interest_rate_monthly)
 
             amount_charged = (interest_due + Decimal(str(fee_amount))).quantize(Decimal("0.01"))
 
