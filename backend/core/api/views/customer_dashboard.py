@@ -91,16 +91,14 @@ class CustomerDashboardView(APIView):
         # ── Bloque 3: Línea de crédito VIP ────────────────────────────────────
         credit_line = calculate_credit_line(customer)
         credit_line_block = {
-            "max_amount":            str(credit_line["max_amount"]),
             "active_debt":           str(credit_line["active_debt"]),
             "available_amount":      str(credit_line["available_amount"]),
             "interest_rate_monthly": str(credit_line["interest_rate_monthly"]),
             "category":              credit_line["category"],
             "score":                 credit_line["score"],
             "message": (
-                f"Este cliente puede empeñar hoy hasta "
-                f"${credit_line['available_amount']:,} "
-                f"con tasa del {credit_line['interest_rate_monthly']}% mensual."
+                f"Tasa sugerida: {credit_line['interest_rate_monthly']}% mensual. "
+                f"Monto a criterio del dueño."
             ),
         }
 

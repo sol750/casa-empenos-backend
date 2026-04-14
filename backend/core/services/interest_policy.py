@@ -1,17 +1,23 @@
+"""
+DEPRECADO — interest_policy.py
+================================
+Esta función fue eliminada de la lógica activa.
+
+La tasa ya no depende del monto prestado.
+Se usa exclusivamente la jerarquía de categoría de cliente:
+  custom_rate_pct > InterestCategoryConfig > CATEGORY_CONFIG default
+
+Ver: core/services/credit_line_calc.py → get_applicable_rate()
+"""
 from decimal import Decimal
 
 
 def interest_rate_monthly_for_principal(principal: Decimal) -> Decimal:
     """
-    Regla de negocio (auditable) para tasa mensual según monto.
-    - < 1500: 10%
-    - 1500..8000: 8%
-    - > 8000: 7%
+    DEPRECADO. No llamar desde código nuevo.
+    Mantenido solo para evitar ImportError en tests o migraciones antiguas.
     """
-    principal = Decimal(principal)
-
-    if principal < Decimal("1500"):
-        return Decimal("10.00")
-    if principal > Decimal("8000"):
-        return Decimal("7.00")
-    return Decimal("8.00")
+    raise NotImplementedError(
+        "interest_rate_monthly_for_principal está deprecada. "
+        "Usa get_applicable_rate() de credit_line_calc.py."
+    )

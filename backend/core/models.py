@@ -822,11 +822,7 @@ class InterestCategoryConfig(models.Model):
     )
     base_rate_pct = models.DecimalField(
         max_digits=6, decimal_places=2,
-        help_text="Tasa mensual base (%) para esta categoría",
-    )
-    max_principal = models.DecimalField(
-        max_digits=12, decimal_places=2,
-        help_text="Capital máximo prestable para esta categoría (Bs.)",
+        help_text="Tasa mensual base (%) para esta categoría. Sin límite de monto.",
     )
 
     updated_by = models.ForeignKey(
@@ -841,7 +837,7 @@ class InterestCategoryConfig(models.Model):
         verbose_name_plural = "Configuraciones de Tasas"
 
     def __str__(self):
-        return f"{self.category}: {self.base_rate_pct}% / max {self.max_principal}"
+        return f"{self.category}: {self.base_rate_pct}%"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -187,10 +187,11 @@ class PawnContractCreateView(APIView):
         # tal cual (refleja el trato preferencial del libro físico).
         # Modo normal: se aplica la política de categoría del cliente.
         custom_rate = serializer.validated_data.get("interest_rate_monthly")
-        if is_legacy and custom_rate is not None:
+        if custom_rate is not None:
+            # Tasa manual explícita (cualquier contrato, no solo legado)
             interest_rate = custom_rate
         else:
-            interest_rate = get_applicable_rate(customer, principal)
+            interest_rate = get_applicable_rate(customer)
 
         # ── Número de contrato ───────────────────────────────────────────────
         # Modo legado: si el cajero envía custom_contract_number se usa
