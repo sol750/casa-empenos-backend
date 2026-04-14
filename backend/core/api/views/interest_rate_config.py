@@ -162,11 +162,14 @@ class CustomerRateView(APIView):
             # Eliminar personalización → vuelve a política de categoría
             customer.custom_rate_pct = None
             customer.save(update_fields=["custom_rate_pct"])
+            from core.services.credit_line_calc import _get_category_config as get_cat_cfg
+            cat_cfg = get_cat_cfg(customer.category)
             return Response({
                 "detail":          "Tasa personalizada eliminada. Se usará política de categoría.",
                 "ci":              customer.ci,
                 "custom_rate_pct": None,
-                "effective_rate":  str(customer.custom_rate_pct),
+                "effective_rate":  str(cat_cfg["base_rate"]),
+                "rate_source":     "CATEGORY",
             })
 
         try:

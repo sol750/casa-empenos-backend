@@ -209,6 +209,13 @@ class CashMovement(models.Model):
     performed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="cash_movements")
     performed_at = models.DateTimeField(auto_now_add=True)
 
+    # Fecha efectiva del movimiento para caja retroactiva (Fase de Sincronización).
+    # None = usar performed_at.date(). Se fija en start_date para contratos históricos.
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Fecha real del documento físico. Solo se usa en modo sincronización legado.",
+    )
+
     note = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
@@ -280,11 +287,29 @@ class PawnContract(models.Model):
         help_text="Fecha/hora en que el contrato fue marcado automáticamente como DEFAULTED.",
     )
 
+    # ── Gastos adicionales (Phase de Sincronización / operativa) ─────────────
+    admin_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00"),
+        help_text="Gastos administrativos cobrados al momento de crear el contrato.",
+    )
+    storage_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00"),
+        help_text="Gastos de almacenaje cobrados al momento de crear el contrato.",
+    )
+
+    # ── Trazabilidad de digitalización ───────────────────────────────────────
+    # Código de la sucursal/operador que digitalizó el contrato en modo SYNC.
+    # Ej: "Pt1" → el número de contrato quedará como "Pt1-107" en los libros.
+    sync_operator_code = models.CharField(
+        max_length=20, blank=True, default="",
+        help_text="Iniciales de la sucursal que digitalizó este contrato. Ej: Pt1",
+    )
+
     def __str__(self):
         return self.contract_number
 
     interest_accrued_until = models.DateField(null=True, blank=True)
-    
+
     investor = models.ForeignKey(
         "Investor",
         null=True,
@@ -817,6 +842,51 @@ class InterestCategoryConfig(models.Model):
 
     def __str__(self):
         return f"{self.category}: {self.base_rate_pct}% / max {self.max_principal}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FASE DE SINCRONIZACIÓN — Ajuste de saldo retroactivo
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LegacyBalanceAdjustment(models.Model):
+    """
+    Ajuste de saldo inicial para la Fase de Sincronización (digitalización de
+    contratos históricos 2023-2025).
+
+    El dueño ingresa el saldo físico del libro para un día/mes determinado.
+    El reporte de Conciliación compara este valor contra el saldo calculado
+    por el sistema a partir de los movimientos digitalizados.
+    """
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name="legacy_adjustments",
+    )
+    adjustment_date = models.DateField(
+        help_text="Fecha del libro físico que se está ajustando (ej: último día del mes).",
+    )
+    book_balance = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        help_text="Saldo físico según el libro a esta fecha (Bs.).",
+    )
+    note = models.TextField(blank=True, default="",
+        help_text="Observaciones opcionales del dueño.",
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="legacy_adjustments",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = "Ajuste de Saldo Legado"
+        verbose_name_plural = "Ajustes de Saldo Legado"
+        ordering = ["branch", "adjustment_date"]
+        unique_together = [("branch", "adjustment_date")]
+
+    def __str__(self):
+        return f"{self.branch.code} | {self.adjustment_date} | Bs.{self.book_balance}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

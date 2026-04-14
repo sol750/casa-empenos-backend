@@ -146,6 +146,13 @@ from core.api.views.branch_management import (
     CashRegisterSettingsView,
 )
 
+# ── Fase de Sincronización (digitalización contratos históricos) ──────────────
+from core.api.views.sync_reconciliation import (
+    SyncBalanceAdjustmentView,
+    SyncBalanceAdjustmentDeleteView,
+    SyncBookReconciliationView,
+)
+
 
 urlpatterns = [
 
@@ -309,4 +316,12 @@ urlpatterns = [
     path("branches/<int:branch_id>",                   BranchDetailView.as_view()),
     path("branches/<int:branch_id>/cash-registers",    BranchCashRegisterCreateView.as_view()),
     path("cash-registers/<uuid:register_id>/settings", CashRegisterSettingsView.as_view()),
+
+    # ── Fase de Sincronización ────────────────────────────────────────────────
+    path("sync/balance-adjustments",
+         SyncBalanceAdjustmentView.as_view()),
+    path("sync/balance-adjustments/<uuid:adjustment_id>",
+         SyncBalanceAdjustmentDeleteView.as_view()),
+    path("sync/book-reconciliation",
+         SyncBookReconciliationView.as_view()),
 ]
