@@ -148,13 +148,7 @@ class PawnAmortizationCreateView(APIView):
         if cash_session.status != CashSession.Status.OPEN:
             return Response({"detail": "La sesión de caja no está abierta."}, status=409)
 
-        # Mismo sucursal que el contrato (no owner)
-        if not is_owner_admin(request.user):
-            if cash_session.branch_id != contract.branch_id:
-                return Response(
-                    {"detail": "La sesión debe pertenecer a la sucursal del contrato."},
-                    status=403,
-                )
+        # Cualquier cajero con sesión activa puede amortizar contratos de otras sucursales
 
         note = request.data.get("note", "")
 

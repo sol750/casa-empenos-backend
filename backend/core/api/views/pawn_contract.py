@@ -59,6 +59,9 @@ class PawnContractCreateView(APIView):
 
         principal = serializer.validated_data["principal_amount"]
 
+        # Extraer start_date aquí para que el bloque MVI pueda detectar modo legado
+        start_date = serializer.validated_data.get("start_date", timezone.now().date())
+
         # ── MVI: validar monto antes de crear el contrato ─────────────────────
         items_data_pre = serializer.validated_data.get("items", [])
         if items_data_pre:
@@ -104,9 +107,14 @@ class PawnContractCreateView(APIView):
             else:
                 mvi_result = {"suggestion": None}
 
-            mvi_check = validate_principal_against_mvi(principal, mvi_result)
+            mvi_check = validate_principal_against_mvi(
+                principal, mvi_result, contract_date=start_date
+            )
 
-            if mvi_check["status"] == "HARD_BLOCK":
+            if mvi_check["status"] == "LEGACY_ADVISORY":
+                # Contrato histórico pre-2026: se acepta sin bloqueo ni override
+                mvi_alert = mvi_check
+            elif mvi_check["status"] == "HARD_BLOCK":
                 # Verificar si viene con override aprobado
                 override_id = request.data.get("mvi_override_id")
                 if override_id:
@@ -139,8 +147,9 @@ class PawnContractCreateView(APIView):
                         },
                         status=status.HTTP_409_CONFLICT,
                     )
-            # SOFT_WARNING: se deja pasar pero se anota en mvi_alert
-            mvi_alert = mvi_check if mvi_check["status"] == "SOFT_WARNING" else None
+            # SOFT_WARNING / LEGACY_ADVISORY: se deja pasar pero se anota en mvi_alert
+            if mvi_check["status"] not in ("SOFT_WARNING", "LEGACY_ADVISORY"):
+                mvi_alert = None
         else:
             mvi_result  = None
             mvi_alert   = None
@@ -161,10 +170,6 @@ class PawnContractCreateView(APIView):
                 investor = Investor.objects.get(public_id=investor_id)
             except Investor.DoesNotExist:
                 return Response({"detail": "Inversionista no encontrado."}, status=404)
-
-        start_date = serializer.validated_data.get(
-            "start_date", timezone.now().date()
-        )
 
         # Respetar due_date del payload si fue enviado, sino calcular 1 mes
         due_date = serializer.validated_data.get("due_date") or _calculate_due_date(start_date)
@@ -300,13 +305,14 @@ class PawnContractCreateView(APIView):
             ),
         }
 
-        # Adjuntar advertencia MVI si hubo soft warning
+        # Adjuntar advertencia MVI si hubo soft warning o modo legado
         if mvi_alert:
             response_data["mvi_warning"] = {
                 "status":      mvi_alert["status"],
                 "message":     mvi_alert["message"],
                 "recommended": mvi_alert.get("recommended"),
-                "max_allowed": mvi_alert.get("max_allowed_no_block"),
+                "max_allowed": mvi_alert.get("max_allowed_no_block") or mvi_alert.get("hard_max"),
+                "legacy_mode": mvi_alert.get("legacy_mode", False),
             }
 
         return Response(response_data, status=status.HTTP_201_CREATED)

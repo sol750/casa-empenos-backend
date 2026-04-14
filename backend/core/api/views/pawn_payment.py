@@ -46,15 +46,13 @@ class PawnPaymentCreateView(APIView):
         if contract.status != PawnContract.Status.ACTIVE:
             return Response({"detail": "El contrato no está activo."}, status=status.HTTP_409_CONFLICT)
 
-        # 3) Control de acceso por sucursal (contrato)
+        # 3) Acceso por rol — cualquier cajero de cualquier sucursal puede cobrar/cerrar
+        # (La caja que recibe el dinero puede ser diferente a la del contrato)
+        # Solo se bloquea si el usuario no tiene acceso a NINGUNA sucursal activa.
         if not is_owner_admin(request.user):
             allowed_codes = get_user_branch_codes(request.user)
-            if contract.branch.code not in allowed_codes:
-                return Response({"detail": "No tiene acceso a esta sucursal."}, status=status.HTTP_403_FORBIDDEN)
-
-        # 4) Pago debe registrarse en la misma sucursal del contrato (MVP)
-        if (cash_session.branch_id != contract.branch_id) and (not is_owner_admin(request.user)):
-            return Response({"detail": "El pago debe registrarse en la sucursal del contrato."}, status=status.HTTP_403_FORBIDDEN)
+            if not allowed_codes:
+                return Response({"detail": "No tiene acceso a ninguna sucursal."}, status=status.HTTP_403_FORBIDDEN)
 
         payment_amount = serializer.validated_data["amount"]
         payment_date = serializer.validated_data.get("payment_date", timezone.now().date())

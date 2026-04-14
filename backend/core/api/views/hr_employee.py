@@ -127,6 +127,20 @@ class EmployeeListCreateView(APIView):
             except CashRegister.DoesNotExist:
                 return Response({"detail": "Caja no encontrada."}, status=400)
 
+        # Convertir fechas: Django no coerciona strings a date en el objeto Python
+        # devuelto por create() — solo lo hace al persistir en BD.
+        # Si no se parsea antes, seniority_years/.month falla con AttributeError.
+        from datetime import date as _date
+        def _parse_date(val):
+            if val is None:
+                return None
+            if isinstance(val, _date):
+                return val
+            return _date.fromisoformat(str(val))
+
+        hire_date      = _parse_date(d["hire_date"])
+        trial_end_date = _parse_date(d.get("trial_end_date"))
+
         with transaction.atomic():
             emp = Employee.objects.create(
                 user              = user,
@@ -142,8 +156,8 @@ class EmployeeListCreateView(APIView):
                 address           = d.get("address", ""),
                 contract_type     = d.get("contract_type", Employee.ContractType.INDEFINIDO),
                 work_schedule     = d.get("work_schedule", Employee.WorkSchedule.HALF_TIME),
-                hire_date         = d["hire_date"],
-                trial_end_date    = d.get("trial_end_date") or None,
+                hire_date         = hire_date,
+                trial_end_date    = trial_end_date,
                 base_salary       = Decimal(str(d["base_salary"])),
                 created_by        = request.user,
             )
@@ -158,6 +172,8 @@ class EmployeeListCreateView(APIView):
                     note         = item.get("note", ""),
                 )
 
+        # Recargar desde BD para asegurar que todos los campos son tipos Python correctos
+        emp.refresh_from_db()
         return Response(_serialize_employee(emp, detail=True), status=201)
 
 
@@ -186,17 +202,33 @@ class EmployeeDetailView(APIView):
         if not emp:
             return Response({"detail": "Empleado no encontrado."}, status=404)
 
+        from datetime import date as _date
+        def _parse_date(val):
+            if val is None:
+                return None
+            if isinstance(val, _date):
+                return val
+            return _date.fromisoformat(str(val))
+
         d = request.data
         updatable = [
             "first_name", "last_name_paternal", "last_name_maternal",
             "phone", "address", "contract_type", "work_schedule",
-            "trial_end_date", "nua_cua", "complemento_ci",
+            "nua_cua", "complemento_ci",
         ]
         changed = []
         for field in updatable:
             if field in d:
                 setattr(emp, field, d[field])
                 changed.append(field)
+
+        # Campos de fecha — parsear antes de asignar
+        if "trial_end_date" in d:
+            emp.trial_end_date = _parse_date(d["trial_end_date"])
+            changed.append("trial_end_date")
+        if "hire_date" in d:
+            emp.hire_date = _parse_date(d["hire_date"])
+            changed.append("hire_date")
 
         if "base_salary" in d:
             emp.base_salary = Decimal(str(d["base_salary"]))

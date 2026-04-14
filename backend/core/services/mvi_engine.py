@@ -312,12 +312,28 @@ def get_mvi_suggestion(
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Validar si un monto supera el límite MVI
 # ─────────────────────────────────────────────────────────────────────────────
-def validate_principal_against_mvi(principal: Decimal, suggestion: dict) -> dict:
+def validate_principal_against_mvi(
+    principal: Decimal,
+    suggestion: dict,
+    contract_date=None,
+) -> dict:
     """
     Retorna:
-      status: OK | SOFT_WARNING | HARD_BLOCK
+      status: OK | SOFT_WARNING | HARD_BLOCK | LEGACY_ADVISORY
       message: descripción
+
+    Modo legado: si contract_date < 2026-01-01, el HARD_BLOCK se convierte en
+    LEGACY_ADVISORY para permitir la migración de contratos históricos (2023-2025).
     """
+    from datetime import date as _date
+
+    LEGACY_CUTOFF = _date(2026, 1, 1)
+    is_legacy = (
+        contract_date is not None
+        and isinstance(contract_date, _date)
+        and contract_date < LEGACY_CUTOFF
+    )
+
     if not suggestion or not suggestion.get("suggestion"):
         return {"status": "OK", "message": "Sin referencia MVI disponible."}
 
@@ -337,6 +353,19 @@ def validate_principal_against_mvi(principal: Decimal, suggestion: dict) -> dict
                        "Se registrará una advertencia.",
             "recommended":    str(recommended),
             "max_allowed_no_block": str(hard_max),
+        }
+
+    # HARD_BLOCK — pero si el contrato es legado (pre-2026), degradar a LEGACY_ADVISORY
+    if is_legacy:
+        return {
+            "status":  "LEGACY_ADVISORY",
+            "message": (
+                f"Contrato legado ({contract_date}): el monto supera el límite MVI actual "
+                f"({hard_max} Bs), pero se acepta sin bloqueo por ser anterior al 01/01/2026."
+            ),
+            "recommended": str(recommended),
+            "hard_max":    str(hard_max),
+            "legacy_mode": True,
         }
 
     return {
