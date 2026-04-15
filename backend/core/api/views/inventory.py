@@ -30,9 +30,32 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import CashSession, CashMovement, Branch
+from core.models import CashSession, CashMovement, Branch, Customer
 from core.models_inventory import DirectPurchase, DirectPurchasePhoto
 from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
+from core.api.serializers.direct_purchase import DirectPurchaseCreateSerializer
+
+# Valores placeholder para vendedores creados automáticamente
+_PLACEHOLDER_BIRTH_DATE = date(1900, 1, 1)
+_PLACEHOLDER_PHONE      = "0000000"
+
+
+def _split_full_name(full_name: str) -> tuple:
+    """
+    Divide un nombre completo en (first_name, last_name_paternal, last_name_maternal).
+    Ejemplos:
+      "Juan Perez"        → ("Juan",  "Perez",  "")
+      "Juan Perez Garcia" → ("Juan",  "Perez",  "Garcia")
+      "Pedro"             → ("Pedro", "Sin apellido", "")
+    """
+    parts = full_name.strip().split()
+    if len(parts) == 0:
+        return ("Sin nombre", "Sin apellido", "")
+    if len(parts) == 1:
+        return (parts[0], "Sin apellido", "")
+    if len(parts) == 2:
+        return (parts[0], parts[1], "")
+    return (parts[0], parts[1], " ".join(parts[2:]))
 
 MIN_PHOTOS = 3
 
@@ -140,64 +163,120 @@ class InventoryDetailView(APIView):
 # FASE A — Crear Compra Directa
 # ─────────────────────────────────────────────────────────────────────────────
 class DirectPurchaseCreateView(APIView):
-    """POST /api/inventory/direct-purchase"""
+    """
+    POST /api/inventory/direct-purchase
+
+    Campos principales:
+      cash_session_id, category, description, purchase_price
+      market_value_estimate (opcional)
+      estimated_selling_price (opcional) → pvp + projected_profit; status=EN_VENTA
+      purchase_date / effective_date (opcional) → retroactivo en caja
+      customer_ci / customer_full_name (opcional) → crea Customer placeholder si no existe
+      attributes (opcional) → JSON con extras (marca, modelo, color, etc.)
+
+    Flujo:
+      1. Validar con DirectPurchaseCreateSerializer
+      2. Verificar sesión de caja abierta
+      3. Lookup/creación del vendedor en tabla Customer (efecto secundario, sin FK en modelo)
+         → Los datos del vendedor se almacenan en attributes["seller_ci"] / ["seller_name"]
+      4. Calcular pvp / projected_profit / status inicial
+      5. Crear DirectPurchase + CashMovement(PURCHASE_OUT) en transaction.atomic()
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        serializer = DirectPurchaseCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        v = serializer.validated_data
+
         require_roles(request.user, {"CAJERO", "SUPERVISOR", "OWNER_ADMIN"})
 
-        required = ["cash_session_id", "category", "description", "purchase_price"]
-        for f in required:
-            if not request.data.get(f):
-                return Response({"detail": f"Campo requerido: {f}"}, status=400)
-
+        # ── 1) Sesión de caja ─────────────────────────────────────────────────
         try:
             cash_session = CashSession.objects.select_related(
                 "cash_register", "branch"
-            ).get(public_id=request.data["cash_session_id"])
+            ).get(public_id=v["cash_session_id"])
         except CashSession.DoesNotExist:
-            return Response({"detail": "Sesión de caja no encontrada."}, status=404)
+            return Response({"detail": "Sesión de caja no encontrada."}, status=status.HTTP_404_NOT_FOUND)
 
         if cash_session.status != CashSession.Status.OPEN:
-            return Response({"detail": "La sesión de caja no está abierta."}, status=409)
+            return Response({"detail": "La sesión de caja no está abierta."}, status=status.HTTP_409_CONFLICT)
 
-        try:
-            purchase_price = Decimal(str(request.data["purchase_price"]))
-            if purchase_price <= 0:
-                raise ValueError
-        except (InvalidOperation, ValueError):
-            return Response({"detail": "purchase_price debe ser mayor a 0."}, status=400)
+        # ── 2) Fechas ─────────────────────────────────────────────────────────
+        # _resolved_date es None (hoy implícito) o la fecha histórica provista
+        purchase_date  = v["_resolved_date"]          # None → se deja null en el modelo
+        effective_date = purchase_date                  # None → CashMovement usa performed_at
 
-        mve_raw = request.data.get("market_value_estimate")
-        market_value_estimate = Decimal(str(mve_raw)) if mve_raw else None
+        # ── 3) Vendedor — lookup o creación de Customer (efecto secundario) ──
+        #
+        # DirectPurchase NO tiene FK a Customer, pero sí podemos:
+        #   a) Registrar el CI/nombre en attributes["seller_ci"] / ["seller_name"]
+        #   b) Crear o vincular el registro en la tabla Customer para el historial
+        #
+        customer_ci   = v["customer_ci"]
+        raw_name      = v["customer_full_name"]
+        seller_customer = None
 
-        # Fase de Sincronización: purchase_date / effective_date
-        purchase_date = None
-        effective_date = None
-        raw_pd = request.data.get("purchase_date") or request.data.get("effective_date")
-        if raw_pd:
-            try:
-                purchase_date = date.fromisoformat(str(raw_pd))
-            except ValueError:
-                return Response({"detail": "purchase_date debe estar en formato YYYY-MM-DD."}, status=400)
-            if purchase_date > timezone.now().date():
-                return Response({"detail": "purchase_date no puede ser futura."}, status=400)
-            effective_date = purchase_date
+        if customer_ci:
+            seller_customer = Customer.objects.filter(ci=customer_ci).first()
 
+            if seller_customer is None and raw_name:
+                first_name, last_paternal, last_maternal = _split_full_name(raw_name)
+                seller_customer = Customer.objects.create(
+                    ci                 = customer_ci,
+                    first_name         = first_name,
+                    last_name_paternal = last_paternal,
+                    last_name_maternal = last_maternal,
+                    birth_date         = _PLACEHOLDER_BIRTH_DATE,
+                    phone              = _PLACEHOLDER_PHONE,
+                    category           = Customer.Category.BRONCE,
+                    score              = 50,
+                    created_by         = request.user,
+                )
+
+        # ── 4) Construir attributes enriquecidos con datos del vendedor ────────
+        attrs = dict(v.get("attributes") or {})   # copia mutable del JSON recibido
+        if customer_ci:
+            attrs["seller_ci"] = customer_ci
+        if raw_name:
+            attrs["seller_name"] = raw_name
+        elif seller_customer:
+            attrs["seller_name"] = seller_customer.full_name
+
+        # ── 5) PVP / Projected Profit / Status inicial ────────────────────────
+        purchase_price          = v["purchase_price"]
+        estimated_selling_price = v.get("estimated_selling_price")   # puede ser None
+
+        if estimated_selling_price is not None:
+            pvp              = estimated_selling_price
+            projected_profit = (pvp - purchase_price).quantize(Decimal("0.01"))
+            initial_status   = DirectPurchase.Status.EN_VENTA
+            qr_data          = None   # QR se genera en Fase B (InventoryPriceView)
+        else:
+            pvp              = None
+            projected_profit = None
+            initial_status   = DirectPurchase.Status.COMPRADO_PENDIENTE
+            qr_data          = None
+
+        # ── 6) Persistencia (atómica) ─────────────────────────────────────────
         with transaction.atomic():
             purchase = DirectPurchase.objects.create(
-                branch                 = cash_session.branch,
-                cash_session           = cash_session,
-                created_by             = request.user,
-                category               = request.data["category"].upper(),
-                description            = request.data["description"],
-                attributes             = request.data.get("attributes", {}),
-                market_value_estimate  = market_value_estimate,
-                purchase_price         = purchase_price,
-                purchase_date          = purchase_date,
+                branch                = cash_session.branch,
+                cash_session          = cash_session,
+                created_by            = request.user,
+                status                = initial_status,
+                category              = v["category"],
+                description           = v["description"],
+                attributes            = attrs,
+                market_value_estimate = v.get("market_value_estimate"),
+                purchase_price        = purchase_price,
+                purchase_date         = purchase_date,
+                pvp                   = pvp,
+                projected_profit      = projected_profit,
             )
 
-            # Movimiento de caja: salida de dinero (CD); retroactivo si purchase_date != hoy
+            # Movimiento de caja: PURCHASE_OUT (salida de efectivo al vendedor)
+            # effective_date retroactivo solo si se proporcionó una fecha histórica
             CashMovement.objects.create(
                 cash_session   = cash_session,
                 cash_register  = cash_session.cash_register,
@@ -209,17 +288,34 @@ class DirectPurchaseCreateView(APIView):
                 effective_date = effective_date,
             )
 
-        return Response(
-            {
-                "detail":           "Artículo registrado como Compra Directa.",
-                "purchase_id":      str(purchase.public_id),
-                "status":           purchase.status,
-                "purchase_price":   str(purchase.purchase_price),
-                "suggested_mvi":    str(purchase.suggested_mvi) if purchase.suggested_mvi else None,
-                "next_step":        f"Sube al menos {MIN_PHOTOS} fotos: POST /api/inventory/{purchase.public_id}/photos",
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        # ── 7) Respuesta ──────────────────────────────────────────────────────
+        response_data = {
+            "purchase_id":          str(purchase.public_id),
+            "status":               purchase.status,
+            "category":             purchase.category,
+            "description":          purchase.description,
+            "purchase_price":       str(purchase.purchase_price),
+            "market_value_estimate": str(purchase.market_value_estimate) if purchase.market_value_estimate else None,
+            "suggested_mvi":        str(purchase.suggested_mvi) if purchase.suggested_mvi else None,
+            "pvp":                  str(pvp) if pvp else None,
+            "projected_profit":     str(projected_profit) if projected_profit else None,
+            "purchase_date":        str(purchase_date) if purchase_date else None,
+            "seller_ci":            customer_ci or None,
+            "seller_customer_id":   str(seller_customer.public_id) if seller_customer else None,
+        }
+
+        if initial_status == DirectPurchase.Status.COMPRADO_PENDIENTE:
+            response_data["next_step"] = (
+                f"Sube al menos {MIN_PHOTOS} fotos y fija el PVP: "
+                f"POST /api/inventory/{purchase.public_id}/photos"
+            )
+        else:
+            response_data["next_step"] = (
+                f"Artículo en vitrina. Sube fotos si lo deseas: "
+                f"POST /api/inventory/{purchase.public_id}/photos"
+            )
+
+        return Response(response_data, status=status.HTTP_201_CREATED)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

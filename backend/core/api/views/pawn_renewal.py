@@ -1,7 +1,11 @@
 from decimal import Decimal
+
+from dateutil.relativedelta import relativedelta
+
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
+
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -22,50 +26,75 @@ class PawnRenewalCreateView(APIView):
 
         require_roles(request.user, {"CAJERO", "SUPERVISOR", "OWNER_ADMIN"})
 
-        # 1) Sesión
+        # ── 1) Sesión de caja ─────────────────────────────────────────────────
         try:
-            cash_session = CashSession.objects.select_related("cash_register", "branch").get(
-                public_id=serializer.validated_data["cash_session_id"]
-            )
+            cash_session = CashSession.objects.select_related(
+                "cash_register", "branch"
+            ).get(public_id=serializer.validated_data["cash_session_id"])
         except CashSession.DoesNotExist:
-            return Response({"detail": "Sesión de caja no encontrada."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Sesión de caja no encontrada."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         if cash_session.status != CashSession.Status.OPEN:
-            return Response({"detail": "La sesión de caja no está abierta."}, status=status.HTTP_409_CONFLICT)
+            return Response(
+                {"detail": "La sesión de caja no está abierta."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
-        # 2) Contrato
+        # ── 2) Contrato ───────────────────────────────────────────────────────
         try:
             contract = PawnContract.objects.select_related("branch").get(
                 public_id=serializer.validated_data["pawn_contract_id"]
             )
         except PawnContract.DoesNotExist:
-            return Response({"detail": "Contrato no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(
+                {"detail": "Contrato no encontrado."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         if contract.status != PawnContract.Status.ACTIVE:
-            return Response({"detail": "El contrato no está activo."}, status=status.HTTP_409_CONFLICT)
+            return Response(
+                {"detail": "El contrato no está activo."},
+                status=status.HTTP_409_CONFLICT,
+            )
 
-        # 3) Acceso por rol — cualquier cajero puede renovar desde su caja
+        # ── 3) Acceso por rol ─────────────────────────────────────────────────
         if not is_owner_admin(request.user):
             allowed_codes = get_user_branch_codes(request.user)
             if not allowed_codes:
-                return Response({"detail": "No tiene acceso a ninguna sucursal."}, status=status.HTTP_403_FORBIDDEN)
+                return Response(
+                    {"detail": "No tiene acceso a ninguna sucursal."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-        new_due_date = serializer.validated_data["new_due_date"]
-        renew_date = serializer.validated_data.get("renew_date") or timezone.now().date()
-        fee_amount = serializer.validated_data.get("fee_amount", Decimal("0.00"))
-        note = serializer.validated_data.get("note", "")
+        # ── 4) Fecha de vencimiento ───────────────────────────────────────────
+        # Si no se envía new_due_date → calculamos automáticamente +1 mes exacto
+        # sobre la due_date actual (Fecha de Corte fija: mismo día del mes).
+        # Esto es ideal para carga masiva: no hace falta calcular la fecha a mano.
+        new_due_date = serializer.validated_data.get("new_due_date")
+        auto_calculated = False
+        if new_due_date is None:
+            new_due_date    = contract.due_date + relativedelta(months=1)
+            auto_calculated = True
+        elif new_due_date <= contract.due_date:
+            return Response(
+                {"detail": "La nueva fecha de vencimiento debe ser mayor a la actual."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Fase de Sincronización: effective_date retroactivo (caja + interés)
-        effective_date = (
-            serializer.validated_data.get("effective_date")
-            or renew_date
-        )
+        # ── 5) Fechas efectivas ───────────────────────────────────────────────
+        renew_date     = serializer.validated_data.get("renew_date") or timezone.now().date()
+        fee_amount     = serializer.validated_data.get("fee_amount", Decimal("0.00"))
+        note           = serializer.validated_data.get("note", "")
 
-        if new_due_date <= contract.due_date:
-            return Response({"detail": "La nueva fecha de vencimiento debe ser mayor a la actual."}, status=status.HTTP_400_BAD_REQUEST)
+        # effective_date: prioridad explícita > renew_date > hoy
+        # Es la fecha que va al libro de caja y controla el cálculo de interés
+        effective_date = serializer.validated_data.get("effective_date") or renew_date
 
         with transaction.atomic():
-            # bloquear contrato
+            # Bloqueo pesimista para evitar condiciones de carrera
             contract = PawnContract.objects.select_for_update().get(pk=contract.pk)
 
             totals = contract.payments.aggregate(principal_paid=Sum("principal_paid"))
@@ -73,10 +102,16 @@ class PawnRenewalCreateView(APIView):
             outstanding_principal = contract.principal_amount - principal_paid_total
 
             if outstanding_principal <= 0:
-                return Response({"detail": "No se puede renovar un contrato sin capital pendiente."}, status=status.HTTP_409_CONFLICT)
+                return Response(
+                    {"detail": "No se puede renovar un contrato sin capital pendiente."},
+                    status=status.HTTP_409_CONFLICT,
+                )
 
-            # Interés acumulado desde último cobro hasta effective_date
-            from_date = contract.interest_accrued_until or contract.start_date
+            # ── Interés del período ───────────────────────────────────────────
+            # Cubre desde el último cobro de interés hasta effective_date.
+            # Para contratos históricos con muchos meses sin renovar, esto
+            # multiplica el interés mensual × meses transcurridos.
+            from_date    = contract.interest_accrued_until or contract.start_date
             interest_due = fixed_interest_for_period(
                 outstanding_principal,
                 contract.interest_rate_monthly,
@@ -84,46 +119,56 @@ class PawnRenewalCreateView(APIView):
                 to_date=effective_date,
             )
 
-            amount_charged = (interest_due + Decimal(str(fee_amount))).quantize(Decimal("0.01"))
+            amount_charged = (
+                interest_due + Decimal(str(fee_amount))
+            ).quantize(Decimal("0.01"))
 
+            # ── Registro de renovación ────────────────────────────────────────
             PawnRenewal.objects.create(
-                contract=contract,
-                cash_session=cash_session,
-                renewed_by=request.user,
-                previous_due_date=contract.due_date,
-                new_due_date=new_due_date,
-                amount_charged=amount_charged,
-                interest_charged=interest_due,
-                fee_charged=fee_amount,
-                note=note,
+                contract          = contract,
+                cash_session      = cash_session,
+                renewed_by        = request.user,
+                previous_due_date = contract.due_date,
+                new_due_date      = new_due_date,
+                amount_charged    = amount_charged,
+                interest_charged  = interest_due,
+                fee_charged       = fee_amount,
+                note              = note,
             )
 
+            # ── Movimiento de caja ────────────────────────────────────────────
+            # effective_date retroactivo solo si difiere del día actual
             if amount_charged > 0:
                 CashMovement.objects.create(
-                    cash_session=cash_session,
-                    cash_register=cash_session.cash_register,
-                    branch=cash_session.branch,
-                    movement_type=CashMovement.MovementType.PAYMENT_IN,
-                    amount=amount_charged,
-                    performed_by=request.user,
-                    note=f"Renovación contrato {contract.contract_number}",
-                    effective_date=effective_date if effective_date != timezone.now().date() else None,
+                    cash_session   = cash_session,
+                    cash_register  = cash_session.cash_register,
+                    branch         = cash_session.branch,
+                    movement_type  = CashMovement.MovementType.PAYMENT_IN,
+                    amount         = amount_charged,
+                    performed_by   = request.user,
+                    note           = f"Renovación contrato {contract.contract_number}",
+                    effective_date = (
+                        effective_date
+                        if effective_date != timezone.now().date()
+                        else None
+                    ),
                 )
 
-            # actualizar contrato
-            contract.due_date = new_due_date
+            # ── Actualizar contrato ───────────────────────────────────────────
+            contract.due_date             = new_due_date
             contract.interest_accrued_until = effective_date
             contract.save(update_fields=["due_date", "interest_accrued_until"])
 
         return Response(
             {
-                "detail": "Contrato renovado.",
-                "contract_number": contract.contract_number,
-                "new_due_date": str(new_due_date),
+                "detail":           "Contrato renovado.",
+                "contract_number":  contract.contract_number,
+                "new_due_date":     str(new_due_date),
+                "auto_calculated":  auto_calculated,   # útil para auditar la carga masiva
                 "interest_charged": str(interest_due),
-                "fee_charged": str(fee_amount),
-                "amount_charged": str(amount_charged),
+                "fee_charged":      str(fee_amount),
+                "amount_charged":   str(amount_charged),
+                "effective_date":   str(effective_date),
             },
             status=status.HTTP_201_CREATED,
         )
-

@@ -1,6 +1,6 @@
 # ARCHITECTURE GUIDE — CASA DE EMPEÑOS
 > **Verdad del Proyecto** — Mapa definitivo del backend Django 5.2 + DRF 3.16 + PostgreSQL 16  
-> Última actualización: 2026-04-13
+> Última actualización: 2026-04-14
 
 ---
 
@@ -52,7 +52,7 @@ casa_empenos/
 │   │   ├── models_security.py       ← Roles y acceso
 │   │   ├── models_inventory.py      ← Compra directa / vitrina
 │   │   ├── models_mvi.py            ← Motor de Valoración Inteligente
-│   │   ├── migrations/              ← 25 migraciones (0001 → 0025)
+│   │   ├── migrations/              ← 28 migraciones (0001 → 0028)
 │   │   ├── api/
 │   │   │   ├── urls.py              ← Registro de todos los endpoints
 │   │   │   ├── security.py          ← Helpers RBAC (require_roles, etc.)
@@ -632,43 +632,82 @@ CashDenomination (Conteo físico en apertura/cierre)
 
 ## 5. SERVICIOS Y LÓGICA DE NEGOCIO
 
-### 5.1 `interest_calc.py` — Cálculo de Interés Prorateado
+### 5.1 `interest_calc.py` — Interés Mensual Fijo
 
 ```python
-prorated_interest(principal, monthly_rate_percent, from_date, to_date) → Decimal
-# Fórmula: principal × (monthly_rate / 100) × (days / 30)
-# days = (to_date - from_date).days
+fixed_interest(principal, monthly_rate_percent) → Decimal
+# Fórmula: principal × (monthly_rate_percent / 100)
+# Sin prorrateo por días. Un mes = un interés completo, siempre.
+#
+# Ejemplos:
+#   fixed_interest(1000, 8)    → 80.00
+#   fixed_interest(500,  7.5)  → 37.50
+#   fixed_interest(2000, 6)    → 120.00
+
+months_between(from_date, to_date) → int
+# Número de meses completos entre dos fechas. Mínimo 1.
+# Usado en Fase de Sincronización para cubrir períodos históricos.
+#
+# Ejemplos:
+#   months_between(date(2024,1,15), date(2024,3,15)) → 2
+#   months_between(date(2024,1,15), date(2024,2,1))  → 1  (< 1 mes → mínimo 1)
+
+fixed_interest_for_period(principal, monthly_rate_percent, from_date=None, to_date=None) → Decimal
+# Interés para un período que puede abarcar múltiples meses.
+# Si from_date y to_date se proveen → multiplica fixed_interest por months_between.
+# Si no → exactamente 1 mes (equivalente a fixed_interest).
+#
+# Uso en sincronización:
+#   from_date = contract.interest_accrued_until (o start_date)
+#   to_date   = effective_date del pago/renovación
+#
+# Ejemplo: 2 meses de deuda:
+#   fixed_interest_for_period(1000, 8, date(2024,1,1), date(2024,3,1)) → 160.00
 ```
 
-### 5.2 `interest_policy.py` — Política de Tasa por Monto
+> ⚠️ `prorated_interest` fue **eliminada** en la Fase de Sincronización.
+> Toda la lógica de interés usa `fixed_interest` (1 mes) o `fixed_interest_for_period`
+> (múltiples meses con `effective_date`).
 
-```python
-interest_rate_monthly_for_principal(principal) → Decimal
-# < 1500 Bs     → 10.00%
-# 1500–8000 Bs  →  8.00%
-# > 8000 Bs     →  7.00%
-```
+### 5.2 `interest_policy.py` — ~~Política de Tasa por Monto~~ (DEPRECADO)
 
-### 5.3 `credit_line_calc.py` — Línea de Crédito y Tasa Aplicable
+> ⚠️ **Eliminada.** La tasa ya no depende del monto prestado.
+> `interest_rate_monthly_for_principal()` lanza `NotImplementedError` si se llama.
+> Usar `get_applicable_rate()` en `credit_line_calc.py`.
+
+### 5.3 `credit_line_calc.py` — Tasa Sugerida por Categoría
+
+**Sin límites automáticos de monto.** El dueño decide el capital manualmente.
 
 **Jerarquía de tasa (mayor prioridad primero):**
-1. `customer.custom_rate_pct` — tasa individual configurada manualmente
-2. `InterestCategoryConfig[category].base_rate_pct` — config en BD por categoría
-3. Defaults hardcoded en `CATEGORY_CONFIG`
+1. `customer.custom_rate_pct` — tasa individual fijada por el dueño
+2. `InterestCategoryConfig[category].base_rate_pct` — config en BD
+3. `CATEGORY_CONFIG[category]["base_rate"]` — default hardcoded
 
 ```python
 CATEGORY_CONFIG = {
-    "BRONCE": {"base_rate": 10.00, "max_principal": 1500.00},
-    "PLATA":  {"base_rate":  8.00, "max_principal": 8000.00},
-    "ORO":    {"base_rate":  7.00, "max_principal": 20000.00},
+    "BRONCE": {"base_rate": 10.00},   # sin max_principal
+    "PLATA":  {"base_rate":  8.00},
+    "ORO":    {"base_rate":  7.00},
 }
-ORO_RATE_DISCOUNT = 0.50%   # descuento adicional para ORO
-MIN_ALLOWED_RATE  = 5.00%   # tasa mínima absoluta
+ORO_RATE_DISCOUNT = 0.50%    # descuento adicional para clientes ORO
+MIN_ALLOWED_RATE  = 5.00%    # tasa mínima absoluta (validada en PUT)
+UNLIMITED_AMOUNT  = 999999   # valor simbólico en dashboards: "sin límite"
 
-# Factor de score: 0.5 + (score/100) * 0.5
-# score=50 → factor=0.75 → max_amount = 75% del límite de categoría
-# score=100 → factor=1.00 → max_amount = 100% del límite
+get_applicable_rate(customer) → Decimal
+# Parámetro 'principal' eliminado: el monto no afecta la tasa.
+# El cajero puede sobreescribir la tasa enviando 'interest_rate_monthly'
+# en el payload de POST /api/pawn-contracts.
+
+calculate_credit_line(customer) → dict
+# Retorna: active_debt, available_amount (999999), interest_rate_monthly,
+#          category, score, risk_color, custom_rate
+# Eliminado: max_amount, score_factor (no hay límite por score)
 ```
+
+> **Tasa manual en contrato:** si el payload incluye `interest_rate_monthly`,
+> ese valor se usa directamente sin importar la categoría del cliente.
+> Válido tanto en modo legado (pre-2026) como en operación normal.
 
 ### 5.4 `contract_state.py` — Máquina de Estados
 
@@ -697,12 +736,13 @@ REGLAS DE NEGOCIO:
 - Se crea PawnPayment + PawnAmortization + CashMovement (PAYMENT_IN)
 - Se actualiza interest_accrued_until = hoy
 
-CIERRE DE CONTRATO CON AMORTIZACIONES (en pawn_payment.py):
-- Si contract.amortizations.exists():
-    interés_cierre = principal_amount × interest_rate_monthly / 100
-    (Interés fijo del primer mes, no prorateado)
-- Si NO hay amortizaciones:
-    interés_cierre = prorated_interest(outstanding, rate, from_date, payment_date)
+INTERÉS EN TODOS LOS FLUJOS (pawn_payment, pawn_renewal, pawn_amortization):
+  interest = fixed_interest(capital_pendiente, interest_rate_monthly)
+  → Capital × Tasa / 100, siempre un mes completo, sin prorrateo.
+
+  Caso especial cierre con amortizaciones previas:
+    base = contract.principal_amount  (capital ORIGINAL, no el pendiente)
+    interest = fixed_interest(base, interest_rate_monthly)
 ```
 
 ### 5.6 `mvi_engine.py` — Motor de Valoración Inteligente
@@ -729,6 +769,24 @@ PRÉSTAMO SUGERIDO:
   vip_max (ORO)  = recomendado × (1 + vip_bonus_pct/100)
 
 MULTI-ARTÍCULO: suma de recomendados de todos los items
+
+MODO LEGADO (excepción por fecha):
+  Si contract_date < 2026-01-01:
+    HARD_BLOCK → se degrada automáticamente a LEGACY_ADVISORY
+    El contrato se acepta sin requerir mvi_override_id
+    mvi_alert queda con status="LEGACY_ADVISORY" para registro
+    Propósito: migración de ~900 contratos históricos 2023-2025
+    cuyos montos no coinciden con precios de mercado actuales
+```
+
+**Firma actualizada:**
+```python
+validate_principal_against_mvi(
+    principal: Decimal,
+    suggestion: dict,
+    contract_date: date = None,   # ← nuevo; activa modo legado si < 2026-01-01
+) -> dict
+# Retorna status: OK | SOFT_WARNING | HARD_BLOCK | LEGACY_ADVISORY
 ```
 
 ### 5.7 `scoring_engine.py` — Motor de Scoring
@@ -1194,6 +1252,145 @@ net_surplus de caja = expected_balance - opening_amount - CAPITAL_IN + CAPITAL_O
 | 0023 | amortization_inventory | PawnAmortization + DirectPurchase |
 | 0024 | mvi_condition | MVIConfig + AppraisalOverride + PawnItem.condition |
 | 0025 | interest_config + customer_rate + loanamount | InterestCategoryConfig + Customer.custom_rate_pct + PawnItem.loan_amount |
+| 0026 | sync_phase | CashMovement.effective_date + PawnContract.{admin_fee,storage_fee,sync_operator_code} + LegacyBalanceAdjustment |
+| 0027 | remove_max_principal | InterestCategoryConfig: elimina max_principal (sin límites automáticos de crédito) |
+| 0028 | directpurchase_purchase_date | DirectPurchase.purchase_date — fecha real de adquisición para caja retroactiva |
+
+---
+
+## 10.5 FASE DE SINCRONIZACIÓN (PRE-LANZAMIENTO)
+
+### Estado del Sistema: SYNC
+
+El sistema opera en **Fase de Sincronización** hasta que el dueño autorice el
+paso a Producción. Durante esta fase:
+
+- Se digitalizan ~900 contratos históricos (2023-2025) desde los libros físicos.
+- Las validaciones automáticas diseñadas para 2026 están **suspendidas** para
+  contratos con `start_date < 2026-01-01`.
+- El objetivo es que los saldos del sistema coincidan al centavo con los libros
+  antes de iniciar operaciones reales.
+
+### Detección de Contrato Legado
+
+Un contrato es **legado** cuando `start_date < 2026-01-01`. En ese caso:
+
+| Regla Normal (2026+) | Comportamiento Legado |
+|---|---|
+| MVI bloquea montos que superan `hard_max` | MVI devuelve `LEGACY_ADVISORY` — se acepta sin override |
+| Tasa calculada por categoría de cliente | Tasa libre (`interest_rate_monthly` manual) |
+| Número de contrato auto-generado (PT1-XXXXXX) | Número editable (`custom_contract_number`, ej: `Pt1-107`) |
+| `CashMovement.effective_date = null` | `effective_date = start_date` (caja retroactiva) |
+
+### Campos Nuevos en PawnContract (migration 0026)
+
+```
+admin_fee          Decimal  — Gastos administrativos del libro físico
+storage_fee        Decimal  — Gastos de almacenaje del libro físico
+sync_operator_code CharField — Iniciales de la sucursal que digitaliza (ej: Pt1)
+```
+
+### Campo Nuevo en CashMovement (migration 0026)
+
+```
+effective_date  DateField (null)
+  — null:        el movimiento se fecha por performed_at.date()
+  — date(YYYY-MM-DD): fecha real del documento. Usada en reportes retroactivos.
+```
+
+### Campo Nuevo en DirectPurchase (migration 0028)
+
+```
+purchase_date  DateField (null)
+  — null:        se usa created_at.date() como fecha de adquisición
+  — date(YYYY-MM-DD): fecha real de compra según libro físico
+```
+
+### effective_date en los 5 Flujos de Transacción
+
+Todos los flujos aceptan un campo `effective_date` opcional. Cuando se provee:
+1. `CashMovement.effective_date` se marca con esa fecha (impacto retroactivo en caja).
+2. El interés se calcula por **meses transcurridos** desde `interest_accrued_until`
+   (o `start_date`) hasta `effective_date`, usando `fixed_interest_for_period`.
+3. `contract.interest_accrued_until` se actualiza a `effective_date`.
+
+| Flujo | Endpoint | Campo acepta | Fallback |
+|-------|----------|--------------|---------|
+| Renovación | `POST /api/pawn-renewals/` | `effective_date` | `renew_date` → hoy |
+| Amortización | `POST /api/pawn-contracts/{id}/amortize` | `effective_date` | hoy |
+| Cierre/Pago | `POST /api/pawn-payments/` | `effective_date` | `payment_date` → hoy |
+| Capital/Retiro | `POST /api/cash-registers/{id}/capital[/withdraw]` | `effective_date` | ninguno (usa performed_at) |
+| Gastos/CD | `POST /api/cash-sessions/{id}/expenses[/purchases]` | `effective_date` | ninguno |
+| Transferencias | `POST /api/transfers/{id}/accept` | `effective_date` | ninguno |
+| Compra Directa | `POST /api/inventory/direct-purchase` | `purchase_date` o `effective_date` | ninguno |
+
+**Regla de integridad:** `effective_date` no puede ser futura. Se valida en el serializer o en la vista antes de crear ningún objeto.
+
+### Modelo LegacyBalanceAdjustment (migration 0026)
+
+Permite al dueño registrar el saldo físico del libro para una fecha concreta.
+El reporte de Conciliación lo compara contra el saldo calculado por el sistema.
+
+```
+branch          FK → Branch
+adjustment_date DateField (único por sucursal)
+book_balance    Decimal   — Saldo físico del libro (Bs.)
+note            TextField
+created_by      FK → User
+```
+
+### Endpoints de Sincronización
+
+| Método | URL | Descripción |
+|--------|-----|-------------|
+| GET | `/api/sync/balance-adjustments?branch=PT1` | Listar ajustes de saldo |
+| POST | `/api/sync/balance-adjustments` | Registrar saldo del libro físico |
+| DELETE | `/api/sync/balance-adjustments/<uuid>` | Eliminar ajuste |
+| GET | `/api/sync/book-reconciliation?branch=PT1&from=2024-01-01&to=2024-12-31` | Reporte de conciliación mes a mes |
+
+Todos los endpoints requieren rol `OWNER_ADMIN` (salvo el reporte que acepta también `SUPERVISOR`).
+
+### Reporte de Conciliación (`book-reconciliation`)
+
+Retorna una tabla mensual con:
+
+```json
+{
+  "branch": "PT1",
+  "summary": {
+    "total_system_net":    "45230.00",
+    "total_book":          "45100.00",
+    "total_difference":    "130.00",
+    "discrepancy_months":  1,
+    "sync_health":         "WARNING"   ← OK | WARNING | ALERT
+  },
+  "monthly_rows": [
+    {
+      "period":          "2024-03",
+      "system_net":      "8400.00",
+      "book_entry_date": "2024-03-31",
+      "book_balance":    "8400.00",
+      "difference":      "0.00",
+      "status":          "OK"          ← OK | DISCREPANCY | NO_BOOK_ENTRY
+    },
+    ...
+  ]
+}
+```
+
+`sync_health`:
+- `OK` — ningún mes con discrepancia
+- `WARNING` — 1–2 meses con diferencia
+- `ALERT` — 3 o más meses con diferencia
+
+### Paso a Producción
+
+Cuando el dueño confirme que los saldos coinciden:
+1. Verificar que `sync_health = OK` en todas las sucursales.
+2. Desde ese momento, todos los contratos tendrán `start_date >= 2026-01-01`
+   y el modo legado nunca se activará automáticamente.
+3. No se requiere ningún cambio en el código — la condición `start_date < 2026-01-01`
+   deja de cumplirse de forma natural.
 
 ---
 
@@ -1236,4 +1433,9 @@ Customer
 Investor ── InvestorAccount
         └── InvestorMovement(s)
         └── PawnContract(s) (como financiador)
+
+Branch ── LegacyBalanceAdjustment(s)   ← Fase de Sincronización
+
+CashMovement
+  └── effective_date (null en modo normal, date en modo legado)
 ```

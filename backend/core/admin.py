@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.utils.html import format_html
 
 from .models import (
     Branch,
@@ -13,6 +14,10 @@ from .models import (
     Investor,
     InvestorAccount,
     InvestorMovement,
+    Customer,
+    CustomerReference,
+    DirectPurchase,
+    DirectPurchasePhoto
 )
 
 from .models_security import Role, UserRole, UserBranchAccess
@@ -222,3 +227,136 @@ class InvestorMovementAdmin(admin.ModelAdmin):
     list_filter = ("movement_type",)
     search_fields = ("investor__full_name", "note")
     ordering = ("-created_at",)
+
+class CustomerReferenceInline(admin.TabularInline):
+    """Permite editar referencias directamente dentro del perfil del cliente"""
+    model = CustomerReference
+    extra = 1
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    # Columnas principales en la lista
+    list_display = (
+        'ci', 
+        'full_name_display', 
+        'category_badge', 
+        'score_display', 
+        'is_blacklisted', 
+        'created_at'
+    )
+    
+    # Buscador potente para tus 900 contratos
+    search_fields = ('ci', 'first_name', 'last_name_paternal', 'last_name_maternal')
+    
+    # Filtros laterales rápidos
+    list_filter = ('category', 'is_blacklisted', 'created_at')
+    
+    # Organización del formulario de edición
+    fieldsets = (
+        ('Identidad (KYC)', {
+            'fields': (('ci', 'birth_date'), ('first_name', 'last_name_paternal', 'last_name_maternal'))
+        }),
+        ('Multimedia', {
+            'fields': ('photo_face', 'photo_ci'),
+            'classes': ('collapse',) # Se puede ocultar/mostrar
+        }),
+        ('Ubicación y Contacto', {
+            'fields': (('phone', 'email'), 'address', ('gps_lat', 'gps_lon'))
+        }),
+        ('Scoring y Riesgo', {
+            'fields': ('category', 'score', 'custom_rate_pct', 'is_blacklisted', 'blacklist_reason')
+        }),
+        ('Estadísticas (Lectura)', {
+            'fields': (('total_contracts', 'late_payments_count', 'on_time_payments_count'),),
+            'classes': ('collapse',)
+        }),
+        ('Auditoría', {
+            'fields': ('created_by',),
+        }),
+    )
+
+    inlines = [CustomerReferenceInline]
+
+    # --- Funciones estéticas para el Admin ---
+
+    def full_name_display(self, obj):
+        return obj.full_name
+    full_name_display.short_description = "Nombre Completo"
+
+    def score_display(self, obj):
+        """Muestra el score con el color de riesgo"""
+        color = {
+            "GREEN": "#28a745",
+            "YELLOW": "#ffc107",
+            "RED": "#dc3545"
+        }.get(obj.risk_color, "#000")
+        
+        return format_html(
+            '<b style="color: {};">{} pts</b>',
+            color, obj.score
+        )
+    score_display.short_description = "Scoring"
+
+    def category_badge(self, obj):
+        """Muestra la categoría con estilo"""
+        colors = {"ORO": "#FFD700", "PLATA": "#C0C0C0", "BRONCE": "#CD7F32"}
+        return format_html(
+            '<span style="background: {}; color: black; padding: 3px 10px; border-radius: 10px; font-weight: bold;">{}</span>',
+            colors.get(obj.category, "#eee"), obj.category
+        )
+    category_badge.short_description = "Categoría"
+
+# =============================
+# DIRECT PURCHASE
+# =============================
+@admin.register(DirectPurchase)
+class DirectPurchaseAdmin(admin.ModelAdmin):
+    # Esto hará que la tabla sea legible y útil
+    list_display = (
+        'get_short_id', 
+        'description_short', 
+        'category', 
+        'status', 
+        'purchase_price', 
+        'pvp', 
+        'purchase_date'
+    )
+    # Filtros laterales por estado, categoría y fecha real de compra
+    list_filter = ('status', 'category', 'purchase_date', 'branch')
+    
+    # Buscador por descripción y el CI del vendedor dentro del JSON
+    search_fields = ('description', 'attributes__seller_ci', 'attributes__seller_name')
+    
+    # Campos de solo lectura para seguridad
+    readonly_fields = ('created_at', 'public_id', 'projected_profit', 'actual_profit')
+    
+    # Organizar el formulario por fases (como lo tienes en el modelo)
+    fieldsets = (
+        ("Información Básica", {
+            'fields': ('public_id', 'branch', 'status', 'category', 'description', 'attributes')
+        }),
+        ("Fase A: Adquisición", {
+            'fields': ('cash_session', 'purchase_price', 'market_value_estimate', 'purchase_date', 'created_by', 'created_at')
+        }),
+        ("Fase B: Valoración (Venta)", {
+            'fields': ('pvp', 'projected_profit', 'priced_by', 'priced_at', 'qr_code_data')
+        }),
+        ("Fase C: Liquidación", {
+            'fields': ('sale_cash_session', 'sale_price', 'actual_profit', 'sold_by', 'sold_at')
+        }),
+    )
+
+    def get_short_id(self, obj):
+        return str(obj.public_id)[:8]
+    get_short_id.short_description = "ID Corto"
+
+    def description_short(self, obj):
+        return obj.description[:50] + "..." if len(obj.description) > 50 else obj.description
+    description_short.short_description = "Descripción"
+
+@admin.register(DirectPurchasePhoto)
+class DirectPurchasePhotoAdmin(admin.ModelAdmin):
+   # Solo mostramos la relación con la compra. 
+    # Si el campo de la imagen se llama 'image' o 'file', podrías agregarlo, 
+    # pero por ahora dejemos solo 'purchase' para asegurar que funcione.
+    list_display = ('purchase',)
