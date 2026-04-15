@@ -20,17 +20,28 @@ from core.services.contract_state import (
     calculate_outstanding_principal,
     ContractState,
 )
-from core.services.interest_calc import fixed_interest
+from core.services.interest_calc import fixed_interest_for_period
 
 
-def calculate_amortization_preview(contract, capital_to_pay: Decimal, today: date = None) -> dict:
+def calculate_amortization_preview(
+    contract,
+    capital_to_pay: Decimal,
+    today: date = None,
+    effective_date: date = None,
+) -> dict:
     """
     Calcula los montos de una amortización sin tocar la BD.
     Lanza ValueError si el contrato no está ACTIVO.
     La fecha de vencimiento no cambia.
+
+    effective_date — Fase de Sincronización: fecha real del pago según libros físicos.
+    Si se provee, el interés se calcula por los meses transcurridos desde
+    interest_accrued_until hasta effective_date.
     """
     if today is None:
         today = timezone.now().date()
+    if effective_date is None:
+        effective_date = today
 
     state = get_contract_state(contract, today)
     if state != ContractState.ACTIVO:
@@ -49,7 +60,13 @@ def calculate_amortization_preview(contract, capital_to_pay: Decimal, today: dat
             f"({outstanding}). Para cancelar la deuda completa use el endpoint de pago."
         )
 
-    interest_due = fixed_interest(outstanding, contract.interest_rate_monthly)
+    from_date = contract.interest_accrued_until or contract.start_date
+    interest_due = fixed_interest_for_period(
+        outstanding,
+        contract.interest_rate_monthly,
+        from_date=from_date,
+        to_date=effective_date,
+    )
 
     new_principal = (outstanding - capital_to_pay).quantize(Decimal("0.01"))
     total_to_pay  = (interest_due + capital_to_pay).quantize(Decimal("0.01"))
@@ -65,10 +82,18 @@ def calculate_amortization_preview(contract, capital_to_pay: Decimal, today: dat
         "previous_due_date":      contract.due_date,
         "new_due_date":           contract.due_date,   # sin cambio
         "interest_rate_monthly":  contract.interest_rate_monthly,
+        "effective_date":         effective_date,
     }
 
 
-def create_amortization(contract, capital_to_pay: Decimal, cash_session, user, note: str = ""):
+def create_amortization(
+    contract,
+    capital_to_pay: Decimal,
+    cash_session,
+    user,
+    note: str = "",
+    effective_date: date = None,
+):
     """
     Ejecuta la amortización de forma atómica:
       1. Crea PawnPayment (contabilidad)
@@ -76,14 +101,20 @@ def create_amortization(contract, capital_to_pay: Decimal, cash_session, user, n
       3. CashMovement PAYMENT_IN
       4. Actualiza interest_accrued_until (la due_date NO cambia)
     Retorna (PawnAmortization, preview_dict).
+
+    effective_date — Fase de Sincronización: si se provee, el interés cubre
+    desde interest_accrued_until hasta esa fecha y CashMovement.effective_date
+    se marca retroactivamente.
     """
     from core.models import PawnContract, PawnPayment, PawnAmortization, CashMovement
 
     today = timezone.now().date()
+    if effective_date is None:
+        effective_date = today
 
     with transaction.atomic():
         contract = PawnContract.objects.select_for_update().get(pk=contract.pk)
-        preview  = calculate_amortization_preview(contract, capital_to_pay, today)
+        preview  = calculate_amortization_preview(contract, capital_to_pay, today, effective_date)
 
         # 1) Pago contable (interés + capital)
         PawnPayment.objects.create(
@@ -109,7 +140,7 @@ def create_amortization(contract, capital_to_pay: Decimal, cash_session, user, n
             note               = note,
         )
 
-        # 3) Movimiento de caja
+        # 3) Movimiento de caja (retroactivo si effective_date != hoy)
         CashMovement.objects.create(
             cash_session   = cash_session,
             cash_register  = cash_session.cash_register,
@@ -118,10 +149,11 @@ def create_amortization(contract, capital_to_pay: Decimal, cash_session, user, n
             amount         = preview["total_to_pay"],
             performed_by   = user,
             note           = f"Amortización contrato {contract.contract_number}",
+            effective_date = effective_date if effective_date != today else None,
         )
 
         # 4) Actualizar solo interest_accrued_until — due_date no cambia
-        contract.interest_accrued_until = today
+        contract.interest_accrued_until = effective_date
         contract.save(update_fields=["interest_accrued_until"])
 
     return amort, preview

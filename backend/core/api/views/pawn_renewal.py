@@ -10,7 +10,7 @@ from rest_framework.views import APIView
 from core.models import PawnContract, PawnRenewal, CashSession, CashMovement
 from core.api.serializers.pawn_renewal import PawnRenewalCreateSerializer
 from core.api.security import require_roles, is_owner_admin, get_user_branch_codes
-from core.services.interest_calc import fixed_interest
+from core.services.interest_calc import fixed_interest_for_period
 
 
 class PawnRenewalCreateView(APIView):
@@ -51,9 +51,15 @@ class PawnRenewalCreateView(APIView):
                 return Response({"detail": "No tiene acceso a ninguna sucursal."}, status=status.HTTP_403_FORBIDDEN)
 
         new_due_date = serializer.validated_data["new_due_date"]
-        renew_date = serializer.validated_data.get("renew_date", timezone.now().date())
+        renew_date = serializer.validated_data.get("renew_date") or timezone.now().date()
         fee_amount = serializer.validated_data.get("fee_amount", Decimal("0.00"))
         note = serializer.validated_data.get("note", "")
+
+        # Fase de Sincronización: effective_date retroactivo (caja + interés)
+        effective_date = (
+            serializer.validated_data.get("effective_date")
+            or renew_date
+        )
 
         if new_due_date <= contract.due_date:
             return Response({"detail": "La nueva fecha de vencimiento debe ser mayor a la actual."}, status=status.HTTP_400_BAD_REQUEST)
@@ -69,7 +75,14 @@ class PawnRenewalCreateView(APIView):
             if outstanding_principal <= 0:
                 return Response({"detail": "No se puede renovar un contrato sin capital pendiente."}, status=status.HTTP_409_CONFLICT)
 
-            interest_due = fixed_interest(outstanding_principal, contract.interest_rate_monthly)
+            # Interés acumulado desde último cobro hasta effective_date
+            from_date = contract.interest_accrued_until or contract.start_date
+            interest_due = fixed_interest_for_period(
+                outstanding_principal,
+                contract.interest_rate_monthly,
+                from_date=from_date,
+                to_date=effective_date,
+            )
 
             amount_charged = (interest_due + Decimal(str(fee_amount))).quantize(Decimal("0.01"))
 
@@ -94,12 +107,12 @@ class PawnRenewalCreateView(APIView):
                     amount=amount_charged,
                     performed_by=request.user,
                     note=f"Renovación contrato {contract.contract_number}",
+                    effective_date=effective_date if effective_date != timezone.now().date() else None,
                 )
 
             # actualizar contrato
             contract.due_date = new_due_date
-            if renew_date > from_date:
-                contract.interest_accrued_until = renew_date
+            contract.interest_accrued_until = effective_date
             contract.save(update_fields=["due_date", "interest_accrued_until"])
 
         return Response(

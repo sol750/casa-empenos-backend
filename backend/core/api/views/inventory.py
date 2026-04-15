@@ -19,6 +19,7 @@ Consultas:
 """
 import base64
 import io
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -73,6 +74,7 @@ def _serialize_purchase(p: DirectPurchase, include_qr=False) -> dict:
         "actual_profit":          str(p.actual_profit) if p.actual_profit else None,
         "photos":                 photos,
         "photos_count":           len(photos),
+        "purchase_date":          str(p.purchase_date) if p.purchase_date else None,
         "created_at":             p.created_at,
         "priced_at":              p.priced_at,
         "sold_at":                p.sold_at,
@@ -169,6 +171,19 @@ class DirectPurchaseCreateView(APIView):
         mve_raw = request.data.get("market_value_estimate")
         market_value_estimate = Decimal(str(mve_raw)) if mve_raw else None
 
+        # Fase de Sincronización: purchase_date / effective_date
+        purchase_date = None
+        effective_date = None
+        raw_pd = request.data.get("purchase_date") or request.data.get("effective_date")
+        if raw_pd:
+            try:
+                purchase_date = date.fromisoformat(str(raw_pd))
+            except ValueError:
+                return Response({"detail": "purchase_date debe estar en formato YYYY-MM-DD."}, status=400)
+            if purchase_date > timezone.now().date():
+                return Response({"detail": "purchase_date no puede ser futura."}, status=400)
+            effective_date = purchase_date
+
         with transaction.atomic():
             purchase = DirectPurchase.objects.create(
                 branch                 = cash_session.branch,
@@ -179,9 +194,10 @@ class DirectPurchaseCreateView(APIView):
                 attributes             = request.data.get("attributes", {}),
                 market_value_estimate  = market_value_estimate,
                 purchase_price         = purchase_price,
+                purchase_date          = purchase_date,
             )
 
-            # Movimiento de caja: salida de dinero (CD)
+            # Movimiento de caja: salida de dinero (CD); retroactivo si purchase_date != hoy
             CashMovement.objects.create(
                 cash_session   = cash_session,
                 cash_register  = cash_session.cash_register,
@@ -190,6 +206,7 @@ class DirectPurchaseCreateView(APIView):
                 amount         = purchase_price,
                 performed_by   = request.user,
                 note           = f"CD – Compra directa {purchase.public_id}",
+                effective_date = effective_date,
             )
 
         return Response(

@@ -36,6 +36,12 @@ class DirectPurchase(models.Model):
     created_by          = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="direct_purchases_created")
     created_at          = models.DateTimeField(auto_now_add=True)
 
+    # Fecha real de adquisición (puede diferir de created_at en Fase de Sincronización)
+    purchase_date       = models.DateField(
+        null=True, blank=True,
+        help_text="Fecha real de compra del artículo. Null = usar created_at.date().",
+    )
+
     category            = models.CharField(max_length=20, choices=Category.choices)
     description         = models.TextField()
     attributes          = models.JSONField(default=dict, blank=True)

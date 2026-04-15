@@ -1,3 +1,5 @@
+from datetime import date
+
 from django.utils import timezone
 from django.db import transaction
 
@@ -105,6 +107,17 @@ class TransferAcceptView(APIView):
         if transfer.status != Transfer.Status.PENDING:
             return Response({"detail": "Transferencia ya procesada"}, status=400)
 
+        # Fase de Sincronización: effective_date retroactivo
+        effective_date = None
+        raw_eff = request.data.get("effective_date")
+        if raw_eff:
+            try:
+                effective_date = date.fromisoformat(str(raw_eff))
+            except ValueError:
+                return Response({"detail": "effective_date debe estar en formato YYYY-MM-DD."}, status=400)
+            if effective_date > timezone.now().date():
+                return Response({"detail": "effective_date no puede ser futura."}, status=400)
+
         with transaction.atomic():
 
             from_session = (
@@ -132,24 +145,26 @@ class TransferAcceptView(APIView):
 
             # SALIDA
             CashMovement.objects.create(
-                cash_session=from_session,
-                cash_register=transfer.from_cash_register,
-                branch=transfer.from_cash_register.branch,
-                movement_type=CashMovement.MovementType.TRANSFER_OUT,
-                amount=transfer.amount,
-                performed_by=request.user,
-                note=f"Transferencia enviada {transfer.public_id}"
+                cash_session   = from_session,
+                cash_register  = transfer.from_cash_register,
+                branch         = transfer.from_cash_register.branch,
+                movement_type  = CashMovement.MovementType.TRANSFER_OUT,
+                amount         = transfer.amount,
+                performed_by   = request.user,
+                note           = f"Transferencia enviada {transfer.public_id}",
+                effective_date = effective_date,
             )
 
             # ENTRADA
             CashMovement.objects.create(
-                cash_session=to_session,
-                cash_register=transfer.to_cash_register,
-                branch=transfer.to_cash_register.branch,
-                movement_type=CashMovement.MovementType.TRANSFER_IN,
-                amount=transfer.amount,
-                performed_by=request.user,
-                note=f"Transferencia recibida {transfer.public_id}"
+                cash_session   = to_session,
+                cash_register  = transfer.to_cash_register,
+                branch         = transfer.to_cash_register.branch,
+                movement_type  = CashMovement.MovementType.TRANSFER_IN,
+                amount         = transfer.amount,
+                performed_by   = request.user,
+                note           = f"Transferencia recibida {transfer.public_id}",
+                effective_date = effective_date,
             )
 
             transfer.status = Transfer.Status.COMPLETED

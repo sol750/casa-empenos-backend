@@ -10,6 +10,7 @@ GET  /api/cash-sessions/<session_id>/purchases    → Listar compras de la sesi�
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -22,18 +23,30 @@ from core.services.cash_alerts import check_balance_thresholds
 
 # ── Serializer para Gasto (G) ─────────────────────────────────────────────────
 class CashExpenseCreateSerializer(serializers.Serializer):
-    amount      = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
-    category    = serializers.ChoiceField(choices=CashExpense.Category.choices, default="OTHER")
-    description = serializers.CharField(min_length=5, max_length=500)
-    receipt     = serializers.ImageField(required=False, allow_null=True)
-    note        = serializers.CharField(required=False, default="", allow_blank=True)
+    amount         = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+    category       = serializers.ChoiceField(choices=CashExpense.Category.choices, default="OTHER")
+    description    = serializers.CharField(min_length=5, max_length=500)
+    receipt        = serializers.ImageField(required=False, allow_null=True)
+    note           = serializers.CharField(required=False, default="", allow_blank=True)
+    effective_date = serializers.DateField(required=False, allow_null=True, default=None)
+
+    def validate_effective_date(self, value):
+        if value and value > timezone.now().date():
+            raise serializers.ValidationError("effective_date no puede ser futura.")
+        return value
 
 
 # ── Serializer para Compra Directa (CD) ──────────────────────────────────────
 class CashPurchaseCreateSerializer(serializers.Serializer):
-    amount      = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
-    description = serializers.CharField(min_length=3, max_length=300)
-    note        = serializers.CharField(required=False, default="", allow_blank=True)
+    amount         = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+    description    = serializers.CharField(min_length=3, max_length=300)
+    note           = serializers.CharField(required=False, default="", allow_blank=True)
+    effective_date = serializers.DateField(required=False, allow_null=True, default=None)
+
+    def validate_effective_date(self, value):
+        if value and value > timezone.now().date():
+            raise serializers.ValidationError("effective_date no puede ser futura.")
+        return value
 
 
 def _get_open_session(session_id):
@@ -103,6 +116,7 @@ class CashExpenseView(APIView):
                 amount         = v["amount"],
                 performed_by   = request.user,
                 note           = v.get("note", "") or f"G: {v['description'][:60]}",
+                effective_date = v.get("effective_date"),
             )
             expense = CashExpense.objects.create(
                 cash_movement = movement,
@@ -183,13 +197,14 @@ class CashPurchaseView(APIView):
 
         with transaction.atomic():
             movement = CashMovement.objects.create(
-                cash_session  = session,
-                cash_register = session.cash_register,
-                branch        = session.branch,
-                movement_type = CashMovement.MovementType.PURCHASE_OUT,
-                amount        = v["amount"],
-                performed_by  = request.user,
-                note          = f"CD: {v['description'][:80]}",
+                cash_session   = session,
+                cash_register  = session.cash_register,
+                branch         = session.branch,
+                movement_type  = CashMovement.MovementType.PURCHASE_OUT,
+                amount         = v["amount"],
+                performed_by   = request.user,
+                note           = f"CD: {v['description'][:80]}",
+                effective_date = v.get("effective_date"),
             )
 
         threshold_check = check_balance_thresholds(session)

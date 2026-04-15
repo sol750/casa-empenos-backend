@@ -19,6 +19,7 @@ Flujo de retiro de utilidades (fin de mes):
   1. Dueño abre sesión en "Caja Dueño"
   2. POST /capital/withdraw  →  CAPITAL_OUT  (retira sus ganancias)
 """
+from datetime import date
 from decimal import Decimal
 
 from django.db import transaction
@@ -31,6 +32,23 @@ from rest_framework.views import APIView
 
 from core.models import CashRegister, CashSession, CashMovement
 from core.api.security import require_roles
+
+
+def _parse_effective_date(raw) -> tuple[date | None, Response | None]:
+    """Parsea y valida effective_date. Retorna (date, None) o (None, error_response)."""
+    if not raw:
+        return None, None
+    try:
+        eff = date.fromisoformat(str(raw))
+    except ValueError:
+        return None, Response(
+            {"detail": "effective_date debe estar en formato YYYY-MM-DD."}, status=400
+        )
+    if eff > timezone.now().date():
+        return None, Response(
+            {"detail": "effective_date no puede ser futura."}, status=400
+        )
+    return eff, None
 
 
 CAPITAL_IN_SOURCES = ["EFECTIVO", "BANCO", "TRANSFERENCIA_BANCARIA", "OTRO"]
@@ -76,6 +94,10 @@ class CashCapitalView(APIView):
 
         note = request.data.get("note", "").strip() or f"Inyección de capital — origen: {source}"
 
+        effective_date, err = _parse_effective_date(request.data.get("effective_date"))
+        if err:
+            return err
+
         # La sesión debe estar abierta para registrar el movimiento
         session = CashSession.objects.filter(
             cash_register=register, status=CashSession.Status.OPEN
@@ -98,13 +120,14 @@ class CashCapitalView(APIView):
 
         with transaction.atomic():
             movement = CashMovement.objects.create(
-                cash_session  = session,
-                cash_register = register,
-                branch        = register.branch,
-                movement_type = CashMovement.MovementType.CAPITAL_IN,
-                amount        = amount,
-                performed_by  = request.user,
-                note          = note,
+                cash_session   = session,
+                cash_register  = register,
+                branch         = register.branch,
+                movement_type  = CashMovement.MovementType.CAPITAL_IN,
+                amount         = amount,
+                performed_by   = request.user,
+                note           = note,
+                effective_date = effective_date,
             )
 
         # Validar umbrales post-inyección
@@ -175,6 +198,10 @@ class CashCapitalWithdrawView(APIView):
 
         note = request.data.get("note", "").strip() or f"Retiro: {reason}"
 
+        effective_date, err = _parse_effective_date(request.data.get("effective_date"))
+        if err:
+            return err
+
         session = CashSession.objects.filter(
             cash_register=register, status=CashSession.Status.OPEN
         ).first()
@@ -223,13 +250,14 @@ class CashCapitalWithdrawView(APIView):
 
         with transaction.atomic():
             movement = CashMovement.objects.create(
-                cash_session  = session,
-                cash_register = register,
-                branch        = register.branch,
-                movement_type = CashMovement.MovementType.CAPITAL_OUT,
-                amount        = amount,
-                performed_by  = request.user,
-                note          = note,
+                cash_session   = session,
+                cash_register  = register,
+                branch         = register.branch,
+                movement_type  = CashMovement.MovementType.CAPITAL_OUT,
+                amount         = amount,
+                performed_by   = request.user,
+                note           = note,
+                effective_date = effective_date,
             )
 
         threshold_after = check_balance_thresholds(session)

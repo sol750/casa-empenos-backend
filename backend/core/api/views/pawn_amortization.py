@@ -10,8 +10,10 @@ POST /api/pawn-contracts/{id}/amortize
 GET  /api/pawn-contracts/{id}/state
      → Estado en tiempo real + montos de recuperación
 """
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -152,8 +154,21 @@ class PawnAmortizationCreateView(APIView):
 
         note = request.data.get("note", "")
 
+        # Fase de Sincronización: effective_date retroactivo (caja + interés)
+        effective_date = None
+        raw_eff = request.data.get("effective_date")
+        if raw_eff:
+            try:
+                effective_date = date.fromisoformat(str(raw_eff))
+            except ValueError:
+                return Response({"detail": "effective_date debe estar en formato YYYY-MM-DD."}, status=400)
+            if effective_date > timezone.now().date():
+                return Response({"detail": "effective_date no puede ser futura."}, status=400)
+
         try:
-            amort, preview = create_amortization(contract, capital, cash_session, request.user, note)
+            amort, preview = create_amortization(
+                contract, capital, cash_session, request.user, note, effective_date=effective_date
+            )
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
 

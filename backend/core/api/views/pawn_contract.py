@@ -8,14 +8,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import CashSession, CashMovement, PawnContract, PawnItem, Investor, InvestorAccount, InvestorMovement, Customer
-from core.models_mvi import AppraisalOverride
+from core.models import CashSession, CashMovement, PawnContract, PawnItem, Investor, InvestorAccount, InvestorMovement
 from core.models_security import UserRole
 from core.api.serializers.pawn_contract import PawnContractCreateSerializer
 from core.services.contract_numbering import next_pawn_contract_number
-from core.services.credit_line_calc import get_applicable_rate
-from core.services.scoring_engine import increment_contract_count
-from core.services.mvi_engine import get_mvi_suggestion, validate_principal_against_mvi
+from core.services.interest_policy import interest_rate_monthly_for_principal
 
 
 def _calculate_due_date(start_date):
@@ -28,6 +25,8 @@ class PawnContractCreateView(APIView):
     def post(self, request):
         serializer = PawnContractCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        override_id = None  # para tracking en logs, se setea si viene un override aprobado que bloqueaba el monto
 
         roles = set(
             UserRole.objects.filter(user=request.user)
@@ -57,121 +56,10 @@ class PawnContractCreateView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        principal  = serializer.validated_data["principal_amount"]
-
-        # Extraer start_date aquí para que el bloque MVI pueda detectar modo legado
-        start_date = serializer.validated_data.get("start_date", timezone.now().date())
-
-        # ── Modo Sincronización (Fase de Pre-Lanzamiento) ─────────────────────
-        # Un contrato es "legado" si su fecha es anterior al 01/01/2026.
-        # En modo legado: MVI no bloquea, la tasa se acepta libre, el número de
-        # contrato puede ser el del libro físico.
-        from datetime import date as _date
-        LEGACY_CUTOFF = _date(2026, 1, 1)
-        is_legacy = isinstance(start_date, _date) and start_date < LEGACY_CUTOFF
-
-        # ── MVI: validar monto antes de crear el contrato ─────────────────────
-        items_data_pre = serializer.validated_data.get("items", [])
-        if items_data_pre:
-            # Fix #4: evaluar todos los items y sumar recomendaciones
-            customer_ci_pre = serializer.validated_data.get("customer_ci", "").strip().upper()
-            customer_cat_pre = None
-            if customer_ci_pre:
-                _cust_pre = Customer.objects.filter(ci=customer_ci_pre).first()
-                if _cust_pre:
-                    customer_cat_pre = _cust_pre.category
-
-            from decimal import Decimal as D
-            total_recommended = D("0")
-            total_hard_max    = D("0")
-            total_soft_max    = D("0")
-            has_suggestion    = False
-
-            for _item in items_data_pre:
-                _result = get_mvi_suggestion(
-                    category=_item.get("category", "OTHER"),
-                    description=_item.get("description", ""),
-                    condition=_item.get("condition", "GOOD"),
-                    attributes=_item.get("attributes", {}),
-                    customer_category=customer_cat_pre,
-                )
-                if _result.get("suggestion"):
-                    s = _result["suggestion"]
-                    total_recommended += D(s["recommended"])
-                    total_hard_max    += D(s["hard_max_before_block"])
-                    total_soft_max    += D(s["max_soft_warning"])
-                    has_suggestion = True
-
-            # Construir suggestion sintética para validate_principal_against_mvi
-            if has_suggestion:
-                mvi_result = {
-                    "suggestion": {
-                        "recommended":           str(total_recommended),
-                        "max_soft_warning":      str(total_soft_max),
-                        "hard_max_before_block": str(total_hard_max),
-                    },
-                    "config_snapshot": _result.get("config_snapshot", {}),
-                }
-            else:
-                mvi_result = {"suggestion": None}
-
-            mvi_check = validate_principal_against_mvi(
-                principal, mvi_result, contract_date=start_date
-            )
-
-            if mvi_check["status"] == "LEGACY_ADVISORY":
-                # Contrato histórico pre-2026: se acepta sin bloqueo ni override
-                mvi_alert = mvi_check
-            elif mvi_check["status"] == "HARD_BLOCK":
-                # Verificar si viene con override aprobado
-                override_id = request.data.get("mvi_override_id")
-                if override_id:
-                    try:
-                        override = AppraisalOverride.objects.get(
-                            public_id=override_id,
-                            status=AppraisalOverride.Status.APPROVED,
-                            contract__isnull=True,  # aún no vinculado a contrato
-                        )
-                    except AppraisalOverride.DoesNotExist:
-                        return Response(
-                            {
-                                "detail": "El override_id no es válido, no está aprobado o ya fue utilizado.",
-                                "mvi_status": "HARD_BLOCK",
-                            },
-                            status=status.HTTP_409_CONFLICT,
-                        )
-                else:
-                    return Response(
-                        {
-                            "detail": mvi_check["message"],
-                            "mvi_status":    "HARD_BLOCK",
-                            "recommended":   mvi_check.get("recommended"),
-                            "hard_max":      mvi_check.get("hard_max"),
-                            "action_required": (
-                                "Crea una solicitud en POST /api/mvi/overrides y espera la "
-                                "autorización del dueño. Luego reenvía este request con el campo "
-                                "'mvi_override_id'."
-                            ),
-                        },
-                        status=status.HTTP_409_CONFLICT,
-                    )
-            # SOFT_WARNING / LEGACY_ADVISORY: se deja pasar pero se anota en mvi_alert
-            if mvi_check["status"] not in ("SOFT_WARNING", "LEGACY_ADVISORY"):
-                mvi_alert = None
-        else:
-            mvi_result  = None
-            mvi_alert   = None
-            override_id = None
-
-        # ── Vincular cliente por CI (si existe en la BD) ──────────────────────
-        customer = None
-        customer_ci = serializer.validated_data.get("customer_ci", "").strip().upper()
-        if customer_ci:
-            customer = Customer.objects.filter(ci=customer_ci).first()
-
+        principal = serializer.validated_data["principal_amount"]
+        
         investor_id = serializer.validated_data.get("investor_id")
 
-        # Validación previa de existencia del inversor (sin lock todavía)
         investor = None
         if investor_id:
             try:
@@ -179,90 +67,51 @@ class PawnContractCreateView(APIView):
             except Investor.DoesNotExist:
                 return Response({"detail": "Inversionista no encontrado."}, status=404)
 
-        # Respetar due_date del payload si fue enviado, sino calcular 1 mes
-        due_date = serializer.validated_data.get("due_date") or _calculate_due_date(start_date)
+            account = InvestorAccount.objects.select_for_update().get(investor=investor)
 
-        # ── Tasa de interés ──────────────────────────────────────────────────
-        # Modo legado: si el cajero envía interest_rate_monthly, se acepta
-        # tal cual (refleja el trato preferencial del libro físico).
-        # Modo normal: se aplica la política de categoría del cliente.
-        custom_rate = serializer.validated_data.get("interest_rate_monthly")
-        if custom_rate is not None:
-            # Tasa manual explícita (cualquier contrato, no solo legado)
-            interest_rate = custom_rate
-        else:
-            interest_rate = get_applicable_rate(customer)
-
-        # ── Número de contrato ───────────────────────────────────────────────
-        # Modo legado: si el cajero envía custom_contract_number se usa
-        # directamente (ej: "Pt1-107" del libro físico).
-        custom_cod = serializer.validated_data.get("custom_contract_number", "").strip()
-        if is_legacy and custom_cod:
-            if PawnContract.objects.filter(contract_number=custom_cod).exists():
+            if account.balance < principal:
                 return Response(
-                    {"detail": f"El número de contrato '{custom_cod}' ya existe en el sistema."},
-                    status=status.HTTP_409_CONFLICT,
+                    {
+                        "detail": "Fondos insuficientes del inversionista.",
+                        "available_balance": str(account.balance)
+                    },
+                    status=400
                 )
-            contract_number = custom_cod
-        else:
-            contract_number = next_pawn_contract_number(cash_session.branch)
 
-        # ── Campos de sincronización ─────────────────────────────────────────
-        from decimal import Decimal as _D
-        admin_fee          = serializer.validated_data.get("admin_fee", _D("0.00"))
-        storage_fee        = serializer.validated_data.get("storage_fee", _D("0.00"))
-        sync_operator_code = serializer.validated_data.get("sync_operator_code", "")
+        start_date = serializer.validated_data.get(
+            "start_date", timezone.now().date()
+        )
+
+        due_date = _calculate_due_date(start_date)
+
+        interest_rate = interest_rate_monthly_for_principal(principal)
 
         items_data = serializer.validated_data.get("items", [])
 
         with transaction.atomic():
-
-            # Fix #1: select_for_update DENTRO del atomic para evitar race condition
-            account = None
-            if investor:
-                account = InvestorAccount.objects.select_for_update().get(investor=investor)
-                if account.balance < principal:
-                    return Response(
-                        {
-                            "detail": "Fondos insuficientes del inversionista.",
-                            "available_balance": str(account.balance)
-                        },
-                        status=400
-                    )
-
-            # Rellenar campos de texto legacy desde el objeto Customer si existe
-            customer_full_name = serializer.validated_data["customer_full_name"]
-            if customer and not customer_full_name:
-                customer_full_name = customer.full_name
-
+            
             contract = PawnContract.objects.create(
-                contract_number       = contract_number,
-                branch                = cash_session.branch,
-                created_by            = request.user,
-                customer              = customer,
-                customer_full_name    = customer_full_name,
-                customer_ci           = customer_ci,
-                principal_amount      = principal,
-                interest_rate_monthly = interest_rate,
-                start_date            = start_date,
-                due_date              = due_date,
-                interest_mode         = serializer.validated_data.get("interest_mode"),
-                promo_note            = serializer.validated_data.get("promo_note"),
-                disbursed_cash_session= cash_session,
-                interest_accrued_until= start_date,
-                admin_fee             = admin_fee,
-                storage_fee           = storage_fee,
-                sync_operator_code    = sync_operator_code,
+                contract_number=next_pawn_contract_number(cash_session.branch),
+                branch=cash_session.branch,
+                created_by=request.user,
+                customer_full_name=serializer.validated_data["customer_full_name"],
+                customer_ci=serializer.validated_data.get("customer_ci", ""),
+                principal_amount=principal,
+                interest_rate_monthly=interest_rate,
+                start_date=start_date,
+                due_date=due_date,
+                interest_mode=serializer.validated_data.get("interest_mode"),
+                promo_note=serializer.validated_data.get("promo_note"),
+                disbursed_cash_session=cash_session,
+                interest_accrued_until=start_date,
+                investor=investor,
             )
-
-            # Incrementar contador de contratos del cliente (atómico)
-            if customer:
-                increment_contract_count(customer)
-            # ASIGNAR INVERSIONISTA (account ya bloqueado con select_for_update)
-            if investor and account:
+            # ASIGNAR INVERSIONISTA
+            if investor:
                 contract.investor = investor
                 contract.save(update_fields=["investor"])
 
+                # descontar saldo
                 account.balance -= principal
                 account.save(update_fields=["balance"])
 
@@ -276,104 +125,37 @@ class PawnContractCreateView(APIView):
                 )
 
             # 🔹 Crear items
-            created_items = []
             for item in items_data:
-                pawn_item = PawnItem.objects.create(
+                PawnItem.objects.create(
                     contract=contract,
                     category=item["category"],
                     description=item.get("description", ""),
                     attributes=item.get("attributes", {}),
                     has_box=item.get("has_box", False),
                     has_charger=item.get("has_charger", False),
-                    observations=item.get("observations", ""),
-                    condition=item.get("condition", "GOOD"),
-                    loan_amount=item.get("loan_amount"),
+                    observations=item.get("condition_notes", ""),  # 🔥 CLAVE
                 )
-                created_items.append(pawn_item)
-
-            # 🔹 Vincular override MVI aprobado al contrato (si aplica)
-            if items_data_pre and override_id:
-                try:
-                    AppraisalOverride.objects.filter(
-                        public_id=override_id
-                    ).update(contract=contract)
-                except Exception:
-                    pass
 
             # 🔹 Movimiento de caja
-            # Todos los amounts se guardan POSITIVOS; la dirección la da movement_type (_IN/_OUT)
-            # En modo legado se fija effective_date = start_date para caja retroactiva
             CashMovement.objects.create(
-                cash_session  = cash_session,
-                cash_register = cash_session.cash_register,
-                branch        = cash_session.branch,
-                movement_type = CashMovement.MovementType.LOAN_OUT,
-                amount        = principal,
-                performed_by  = request.user,
-                note          = f"Desembolso contrato {contract.contract_number}",
-                effective_date= start_date if is_legacy else None,
+                cash_session=cash_session,
+                cash_register=cash_session.cash_register,
+                branch=cash_session.branch,
+                movement_type=CashMovement.MovementType.LOAN_OUT,
+                amount=-principal,  # 🔥 negativo correcto
+                performed_by=request.user,
+                note=f"Desembolso contrato {contract.contract_number}",
             )
 
-            # 🔹 Movimiento por gastos adicionales (admin_fee + storage_fee)
-            extra_fees = admin_fee + storage_fee
-            if extra_fees > 0:
-                CashMovement.objects.create(
-                    cash_session  = cash_session,
-                    cash_register = cash_session.cash_register,
-                    branch        = cash_session.branch,
-                    movement_type = CashMovement.MovementType.PAYMENT_IN,
-                    amount        = extra_fees,
-                    performed_by  = request.user,
-                    note          = f"Gastos (adm+almac) contrato {contract.contract_number}",
-                    effective_date= start_date if is_legacy else None,
-                )
-
-        # Desglose de artículos con loan_amount individual
-        items_detail = []
-        for pi in created_items:
-            items_detail.append({
-                "item_id":     str(pi.public_id),
-                "category":    pi.category,
-                "description": pi.description,
-                "condition":   pi.condition,
-                "loan_amount": str(pi.loan_amount) if pi.loan_amount is not None else None,
-            })
-
-        response_data = {
-            "pawn_contract_id":      str(contract.public_id),
-            "contract_number":       contract.contract_number,
-            "status":                contract.status,
-            "principal_amount":      str(contract.principal_amount),
-            "interest_rate_monthly": str(contract.interest_rate_monthly),
-            "interest_mode":         contract.interest_mode,
-            "promo_note":            contract.promo_note,
-            "start_date":            str(contract.start_date),
-            "due_date":              str(contract.due_date),
-            # Gastos adicionales
-            "admin_fee":             str(contract.admin_fee),
-            "storage_fee":           str(contract.storage_fee),
-            # Artículos empeñados con desglose individual
-            "items":                 items_detail,
-            "items_count":           len(items_detail),
-            # Info del cliente vinculado
-            "customer_linked":       customer is not None,
-            "customer_category":     customer.category if customer else None,
-            "oro_discount_applied":  (
-                customer is not None and customer.category == "ORO"
-            ),
-            # Modo sincronización
-            "sync_mode":             is_legacy,
-            "sync_operator_code":    contract.sync_operator_code or None,
-        }
-
-        # Adjuntar advertencia MVI si hubo soft warning o modo legado
-        if mvi_alert:
-            response_data["mvi_warning"] = {
-                "status":      mvi_alert["status"],
-                "message":     mvi_alert["message"],
-                "recommended": mvi_alert.get("recommended"),
-                "max_allowed": mvi_alert.get("max_allowed_no_block") or mvi_alert.get("hard_max"),
-                "legacy_mode": mvi_alert.get("legacy_mode", False),
-            }
-
-        return Response(response_data, status=status.HTTP_201_CREATED)
+        return Response(
+            {
+                "pawn_contract_id": str(contract.public_id),
+                "contract_number": contract.contract_number,
+                "status": contract.status,
+                "principal_amount": str(contract.principal_amount),
+                "interest_rate_monthly": str(contract.interest_rate_monthly),
+                "start_date": str(contract.start_date),
+                "due_date": str(contract.due_date),
+            },
+            status=status.HTTP_201_CREATED,
+        )
