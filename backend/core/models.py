@@ -349,6 +349,7 @@ class PawnRenewal(models.Model):
 
     renewed_at = models.DateTimeField(auto_now_add=True)
     renewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="pawn_renewals")
+    effective_date = models.DateField(null=True, blank=True)
 
     previous_due_date = models.DateField()
     new_due_date = models.DateField()
