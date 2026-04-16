@@ -213,6 +213,13 @@ class CashMovement(models.Model):
 
     note = models.CharField(max_length=255, blank=True, default="")
 
+    # Fase de Sincronización: fecha real del documento físico.
+    # Cuando se establece, los reportes usan esta fecha en vez de performed_at.
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Fecha real del documento físico. Solo se usa en modo sincronización legado.",
+    )
+
     class Meta:
         verbose_name = "Movimiento de Caja"
         verbose_name_plural = "Movimientos de Caja"
@@ -293,6 +300,20 @@ class PawnContract(models.Model):
         blank=True,
         on_delete=models.PROTECT,
         related_name="contracts"
+    )
+
+    # Fase de Sincronización: gastos adicionales y operador
+    admin_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00"),
+        help_text="Gastos administrativos cobrados al momento de crear el contrato.",
+    )
+    storage_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0.00"),
+        help_text="Gastos de almacenaje cobrados al momento de crear el contrato.",
+    )
+    sync_operator_code = models.CharField(
+        max_length=20, blank=True, default="",
+        help_text="Usuario que digitalizó este contrato.",
     )
 
 
@@ -801,10 +822,6 @@ class InterestCategoryConfig(models.Model):
         max_digits=6, decimal_places=2,
         help_text="Tasa mensual base (%) para esta categoría",
     )
-    max_principal = models.DecimalField(
-        max_digits=12, decimal_places=2,
-        help_text="Capital máximo prestable para esta categoría (Bs.)",
-    )
 
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -818,7 +835,7 @@ class InterestCategoryConfig(models.Model):
         verbose_name_plural = "Configuraciones de Tasas"
 
     def __str__(self):
-        return f"{self.category}: {self.base_rate_pct}% / max {self.max_principal}"
+        return f"{self.category}: {self.base_rate_pct}%"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
