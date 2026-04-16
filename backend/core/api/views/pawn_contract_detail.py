@@ -81,6 +81,7 @@ class PawnContractDetailView(APIView):
                 "interest_charged": str(r.interest_charged),
                 "fee_charged":      str(r.fee_charged),
                 "amount_charged":   str(r.amount_charged),
+                
             }
             for r in contract.renewals.order_by("renewed_at")
         ]

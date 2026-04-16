@@ -1,10 +1,11 @@
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework import status
 
-from core.models import CashRegister
+from core.models import CashRegister, Branch
 from core.models_security import UserRole
-from core.api.serializers.cash_register import CashRegisterListSerializer
+from core.api.serializers.cash_register import CashRegisterListSerializer, CashRegisterCreateSerializer
 
 
 class CashRegisterListView(APIView):
