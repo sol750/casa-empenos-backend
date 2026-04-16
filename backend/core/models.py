@@ -822,6 +822,48 @@ class InterestCategoryConfig(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# FASE DE SINCRONIZACIÓN — Ajustes de Saldo Legado
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LegacyBalanceAdjustment(models.Model):
+    """
+    Saldo físico del libro registrado manualmente para una sucursal y fecha dada.
+    Permite conciliar el saldo calculado por el sistema contra el libro físico
+    durante la Fase de Sincronización (digitalización de contratos 2023-2025).
+    """
+    public_id       = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    branch          = models.ForeignKey(
+        "Branch",
+        on_delete=models.PROTECT,
+        related_name="legacy_adjustments",
+    )
+    adjustment_date = models.DateField(
+        help_text="Fecha del libro físico que se está ajustando (ej: último día del mes).",
+    )
+    book_balance    = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text="Saldo físico según el libro a esta fecha (Bs.).",
+    )
+    note            = models.TextField(blank=True, default="")
+    created_by      = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="legacy_adjustments",
+    )
+    created_at      = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name        = "Ajuste de Saldo Legado"
+        verbose_name_plural = "Ajustes de Saldo Legado"
+        ordering            = ["branch", "adjustment_date"]
+        unique_together     = [("branch", "adjustment_date")]
+
+    def __str__(self):
+        return f"{self.branch.code} | {self.adjustment_date} | {self.book_balance} Bs"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MÓDULO RRHH — importado desde models_hr.py para que Django lo descubra
 # ─────────────────────────────────────────────────────────────────────────────
 from core.models_hr import (  # noqa: E402
